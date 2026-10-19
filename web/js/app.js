@@ -130,6 +130,26 @@ IOT.app = (function () {
       const ds = D.thrD.get(main.utid) || [];
       return ds.length ? ds[0] : -1;
     },
+    // lifecycle phase boundaries of request id (design 5.3.1) —
+    // a phase is emitted only when both endpoints exist and t1 > t0
+    reqSegments(id) {
+      const D = IOT.data.D, R = D.req;
+      const out = [];
+      const push = (phase, a, b) => {
+        if (a >= 0 && b >= 0 && b > a) out.push({ phase, t0: a, t1: b });
+      };
+      push('bio', R.t_make[id], R.t_ins[id]);
+      push('queue', R.t_ins[id], R.t_iss0[id]);
+      if (R.rq_n[id] > 0) push('requeue', R.t_iss0[id], R.t_iss[id]);
+      push('service', R.t_iss[id], D.svcEnd[id]);
+      return out;
+    },
+    // peak queue lanes per device
+    qPeak() {
+      return IOT.data.D.devQueue.map((l, di) => ({
+        dev: IOT.data.D.devs[di].name, kind: IOT.data.D.devs[di].kind,
+        lanes: l.length }));
+    },
   };
 
   async function boot() {

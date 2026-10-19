@@ -6,6 +6,24 @@ IOT.input = (function () {
   const keys = new Set();
   let rafId = 0;
 
+  const qStartOf = i =>
+    D.req.t_ins[i] >= 0 ? D.req.t_ins[i] : D.req.t_iss0[i];
+
+  // which lifecycle phase contains time t? (design 5.3.1)
+  function reqPhaseAt(i, t) {
+    const R = D.req;
+    if (R.t_make[i] >= 0 && R.t_ins[i] >= 0 &&
+        t >= R.t_make[i] && t < R.t_ins[i])
+      return ['bio 提交', R.t_ins[i] - R.t_make[i]];
+    if (R.t_ins[i] >= 0 && R.t_iss0[i] >= 0 && t < R.t_iss0[i])
+      return ['调度排队', R.t_iss0[i] - R.t_ins[i]];
+    if (R.rq_n[i] > 0 && R.t_iss0[i] >= 0 && t < R.t_iss[i])
+      return ['requeue 等待', R.t_iss[i] - R.t_iss0[i]];
+    if (R.t_iss[i] >= 0 && t >= R.t_iss[i])
+      return ['设备服务', D.svcEnd[i] - R.t_iss[i]];
+    return ['调度排队', Math.max(0, R.t_iss[i] - qStartOf(i))];
+  }
+
   function init() {
     D = IOT.data.D;
     const cv = document.getElementById('canvas');
@@ -92,6 +110,14 @@ IOT.input = (function () {
         return hitIds(r.ids, r.ids._keys, i => D.tSub[i],
                       i => D.svcEnd[i], t, tol, 'req', r);
       }
+      case 'qlane': {
+        const l = D.devQueue[r.di][r.slot];
+        if (!l || !l.length) return null;
+        if (!l._qs) l._qs =
+          Float64Array.from(l, i => qStartOf(i));
+        return hitIds(l, l._qs, qStartOf,
+                      i => D.req.t_iss[i], t, tol, 'req', r);
+      }
       case 'dstate': {
         if (!r.ids._keys) r.ids._keys =
           Float64Array.from(r.ids, i => D.dst.ts[i]);
@@ -108,6 +134,7 @@ IOT.input = (function () {
         return { type: 'ctr', metric: r.metric, t, row: r };
       case 'group':
       case 'subgroup':
+      case 'qgroup':
         return { type: 'group', gid: r.id, row: r };
       default:
         return { type: 'row', row: r, t };
@@ -146,10 +173,15 @@ IOT.input = (function () {
     switch (h.type) {
       case 'req': {
         const i = h.id;
-        const L = [`${D.strs[R.rwbs[i]]} ${U.fmtBytes(R.bytes[i])}  ` +
+        const L = [];
+        if (IOT.state.hoverT != null) {         // phase under the cursor
+          const [pn, pd] = reqPhaseAt(i, IOT.state.hoverT);
+          L.push(`${pn} ${U.fmtNs(pd)}`);
+        }
+        L.push(`${D.strs[R.rwbs[i]]} ${U.fmtBytes(R.bytes[i])}  ` +
           `dev ${D.devs[D.devIdx.get(R.dev[i])] ?
             D.devs[D.devIdx.get(R.dev[i])].name : R.dev[i]}:` +
-          `${R.sector[i]}`];
+          `${R.sector[i]}`);
         if (R.t_iss[i] >= 0 && R.t_cmp[i] >= 0)
           L.push(`svc ${U.fmtNs(R.t_cmp[i] - R.t_iss[i])}` +
             (R.t_ins[i] >= 0 ? `  q ${U.fmtNs(R.t_iss0[i] - R.t_ins[i])}` : ''));

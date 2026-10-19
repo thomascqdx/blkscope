@@ -68,8 +68,11 @@ IOT.data = (function () {
       D.rwbsOp[i] = op;
       D.tSub[i] = R.t_make[i] >= 0 ? R.t_make[i]
         : (R.t_ins[i] >= 0 ? R.t_ins[i] : R.t_iss0[i]);
+      // zero-length for cmp_lost requests (design 3.8): end = t_iss,
+      // no +200ms; only genuinely-incomplete ones get the extension
       D.svcEnd[i] = R.t_cmp[i] >= 0 ? R.t_cmp[i]
-        : Math.min(D.t1, R.t_iss[i] + 200e6);
+        : (R.lost[i] ? R.t_iss[i]
+                     : Math.min(D.t1, R.t_iss[i] + 200e6));
     }
 
     // ---- maps
@@ -92,6 +95,41 @@ IOT.data = (function () {
     }
     for (const lanes of D.devLanes)
       for (const l of lanes) l.sort((a, b) => R.t_iss[a] - R.t_iss[b]);
+
+    // ---- per-dev scheduler queue lanes (design 5.3.1): requests packed
+    //      greedily lowest-free-lane over [t_ins | t_iss0, t_iss];
+    //      lane count = peak simultaneous queue depth.
+    D.devQueue = D.devs.map(() => []);
+    D.reqQLane = new Map();                // req id -> {dev, lane}
+    {
+      const items = [];
+      for (let i = 0; i < D.nReq; i++) {
+        const a = R.t_ins[i] >= 0 ? R.t_ins[i] : R.t_iss0[i];
+        const b = R.t_iss[i];
+        if (a < 0 || b < 0 || b <= a) continue;
+        const di = D.devIdx.get(R.dev[i]);
+        if (di == null) continue;
+        items.push([a, i, di]);
+      }
+      items.sort((x, y) => x[0] - y[0]);
+      const laneEnds = D.devs.map(() => []);
+      for (const [a, i, di] of items) {
+        const le = laneEnds[di];
+        let placed = false;
+        for (let r = 0; r < le.length; r++) {
+          if (le[r] <= a) {
+            D.devQueue[di][r].push(i); le[r] = R.t_iss[i];
+            D.reqQLane.set(i, { dev: R.dev[i], lane: r });
+            placed = true; break;
+          }
+        }
+        if (!placed) {
+          le.push(R.t_iss[i]);
+          D.devQueue[di].push([i]);
+          D.reqQLane.set(i, { dev: R.dev[i], lane: le.length - 1 });
+        }
+      }
+    }
 
     // ---- per-utid request sub-rows (packed [t_sub, t_cmp]), batches, D segs
     D.thrReqs = new Map();             // utid -> {ids sorted by tSub, sub[][]}
@@ -119,6 +157,7 @@ IOT.data = (function () {
             e.sub.push([i]); ends.push(end);
           } else {
             e.sub[SUBROW_CAP - 1].push(i);
+            e.ovIdx = SUBROW_CAP - 1;
             ends[SUBROW_CAP - 1] = Math.max(ends[SUBROW_CAP - 1], end);
           }
         }

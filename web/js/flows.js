@@ -110,13 +110,29 @@ IOT.flows = (function () {
       }
     } else if (s.sel.type === 'req') {
       const i = s.sel.id;
-      const xA = TS.tToPx(D.tSub[i]);
       const xB = TS.tToPx(D.svcEnd[i]);
       const tr = reqRow(byId, R.utid[i], i);
       const lr = laneRow(byId, R.dev[i], R.slot[i]);
       const ty = rowY(tr), ly = rowY(lr);
       if (ty != null && ly != null)
         arrow(c, xB, ty, xB, ly, false);
+      // queue-lane rect: outline + arrow from its end to the lane start
+      const qp = D.reqQLane && D.reqQLane.get(i);
+      if (qp) {
+        const qr = byId.get('dev' + qp.dev + '_q' + qp.lane);
+        const qy = rowY(qr);
+        if (qy != null) {
+          const xa = TS.tToPx(R.t_ins[i] >= 0 ? R.t_ins[i] : R.t_iss0[i]);
+          const xb = TS.tToPx(R.t_iss[i]);
+          c.save();
+          c.strokeStyle = '#f4cf3f'; c.lineWidth = 1.4;
+          c.strokeRect(xa, qy - qr.h / 2 + 1, Math.max(2, xb - xa),
+                       qr.h - 2);
+          c.restore();
+          const lx0 = TS.tToPx(R.t_iss[i]);   // lane rect starts at t_iss
+          if (ly != null) arrow(c, xb, qy, lx0, ly, false);
+        }
+      }
       // highlight D segs that waited on this request
       const ds = D.reqDsegs.get(i) || [];
       c.save();

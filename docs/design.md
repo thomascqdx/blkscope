@@ -137,6 +137,12 @@ orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_
   前端的全局 / 进程统计**默认只算 `disk`**，可以切换为包含 loop。
 - 文件提示 `hint`：同一个基名（如 `base.apk`）会对应很多不同文件。每个文件取关联读字节数最多的进程名作为 hint，前端显示成 `base.apk · com.xxx`。
 - 读批次被 5ms 间隔切开后，后面子批次的起点是该子批次第一个 fm_add 的时间，`has_start` 为 0（只有第一个子批次的起点是 pc_start）。
+- 3.1 补充（样例发现）：**无数据请求**（issue 的 nr_sector == 0，如 `FFS` flush）不适用 requeue 解释。
+  同一个键上的每次 issue 都开一个新请求；如果之前在途的同键无数据请求一直没有 complete，就把它关闭为「complete 丢失」（`cmp_lost = 1`，t_cmp 仍为 NaN）。
+  样例中 8:32 sector 0 的 137 次 FFS issue 都没有 complete 事件，原逻辑会把它们拼成一个 24.5s 的 requeue。
+- 所有 `cmp_lost = 1` 的请求（包括 trace 结束时仍在途、但同键之后还有事件的情况）都按**零长度**处理：区间终点 = t_iss，不使用 +200ms，
+  不进入在途深度和槽位占用的计算，在泳道上画成 1px 的标记。只有 trace 结束时真正还在途的请求，才使用 `min(t_max, t_iss + 200ms)`。
+  payload 的 req 增加列 `lost`（0/1）。数据质量增加一条 info：「N 个请求没有 complete 事件（多为 flush，内核未上报 block_rq_complete），仅标注下发时刻」。
 - zip 解包要防止路径穿越（成员路径必须落在临时目录内）；每个 trace 处理完要关闭 trace_processor 进程。
 
 ## 4. Payload（payload.py）

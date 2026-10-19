@@ -40,6 +40,7 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
                for i, u in enumerate(P["threads"]["utid"])}
     pname = {P["procs"]["upid"][i]: strs[P["procs"]["name"][i]]
              for i in range(len(P["procs"]["upid"]))}
+    lost = R.get("lost") or [0] * len(R["dev"])
     tot = rd = wr = ot = 0.0
     n = 0
     pb: dict[str, float] = {}
@@ -48,7 +49,9 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
         s = R["t_iss"][i]
         if s < 0:
             continue
-        e = R["t_cmp"][i] if R["t_cmp"][i] >= 0 else min(dur, s + 200e6)
+        # cmp_lost requests are zero-length; +200ms only for real incompletes
+        e = R["t_cmp"][i] if R["t_cmp"][i] >= 0 \
+            else (s if lost[i] else min(dur, s + 200e6))
         if e > s:
             ov = min(e, w1) - max(s, w0)
             f = max(0.0, ov) / (e - s)
@@ -494,6 +497,163 @@ def main() -> int:
         page.keyboard.press("c")   # -> 延迟
         page.wait_for_timeout(150)
         shot("25_color_latency")
+        page.keyboard.press("c")   # -> back to 类别
+        page.wait_for_timeout(80)
+
+        # ---- lifecycle segments (design 5.3.1) ---------------------------
+        seg = page.evaluate("""(() => {
+          const D = IOT.data.D, R = D.req;
+          let r1 = -1, r2 = -1;
+          for (let i = 0; i < D.nReq && (r1 < 0 || r2 < 0); i++) {
+            if (r1 < 0 && R.rq_n[i] > 0 && R.t_ins[i] >= 0 &&
+                R.t_cmp[i] >= 0 &&
+                R.t_iss[i] > R.t_iss0[i]) r1 = i;   // real requeue wait
+            if (r2 < 0 && R.t_ins[i] < 0 && R.rq_n[i] === 0 &&
+                R.t_iss[i] >= 0 && R.t_cmp[i] >= 0) r2 = i;
+          }
+          return { r1, r2, s1: r1 >= 0 ? IOT.debug.reqSegments(r1) : null,
+                   s2: r2 >= 0 ? IOT.debug.reqSegments(r2) : null,
+                   sub1: r1 >= 0 ? D.tSub[r1] : 0,
+                   end1: r1 >= 0 ? D.svcEnd[r1] : 0 };
+        })()""")
+        log("segments r1:", seg["s1"])
+        assert seg["r1"] >= 0, "no requeued+inserted request found"
+        s1 = seg["s1"]
+        # phases ordered + contiguous + spanning t_sub..svcEnd
+        assert s1[0]["t0"] == seg["sub1"], "segments must start at t_sub"
+        assert s1[-1]["t1"] == seg["end1"], "segments must end at svcEnd"
+        for a, b in zip(s1, s1[1:]):
+            assert a["t1"] == b["t0"], \
+                f"phases not contiguous: {a} -> {b}"
+        phases = [p["phase"] for p in s1]
+        order = ["bio", "queue", "requeue", "service"]
+        assert phases == sorted(phases, key=order.index), phases
+        assert "queue" in phases and "requeue" in phases \
+            and "service" in phases
+        log("segments r2:", seg["s2"])
+        if seg["r2"] >= 0:
+            assert [p["phase"] for p in seg["s2"]] == ["service"], \
+                "direct-issue request should have only the service segment"
+        log("lifecycle segment assertions: OK")
+        log("qPeak:", page.evaluate(
+            "IOT.debug.qPeak().filter(q => q.kind === 'disk' "
+            "&& q.lanes > 0)"))
+
+        # 26_lifecycle: opera main thread, req with largest queue time and
+        # rq_n>0, selected, spanning ~half the width, 调度队列 expanded
+        pick = page.evaluate("""(() => {
+          const D = IOT.data.D, R = D.req;
+          for (const g of IOT.tracks.T.groups)
+            if (g.expanded && (g.kind === 'proc' || g.id === 'ov'))
+              IOT.tracks.setExpanded(g.id, false);
+          const named = D.procList.filter(
+            p => p.name === 'com.opera.mini.native');
+          const cands = named.length ? named : [D.procList[0]];
+          let best = null;
+          for (const p of cands) {
+            const main = p.threads.find(t => t.tid === p.pid)
+                      || p.threads[0];
+            if (!main) continue;
+            let dt = 0;
+            for (const i of (D.thrD.get(main.utid) || []))
+              dt += D.dst.dur[i];
+            if (!best || dt > best.dt) best = { p, main, dt };
+          }
+          const e = D.thrReqs.get(best.main.utid);
+          let r = -1, q = -1;
+          for (const i of e.ids) {          // prefer requeued reqs on 8:32
+            if (R.dev[i] !== 2080 || R.t_ins[i] < 0 || R.t_iss[i] < 0)
+              continue;
+            const qq = R.t_iss[i] - R.t_ins[i];
+            if (R.rq_n[i] > 0 && qq > q) { q = qq; r = i; }
+          }
+          if (r < 0)                        // else largest queue time
+            for (const i of e.ids) {
+              if (R.dev[i] !== 2080 || R.t_ins[i] < 0 || R.t_iss[i] < 0)
+                continue;
+              const qq = R.t_iss[i] - R.t_ins[i];
+              if (qq > q) { q = qq; r = i; }
+            }
+          const gi = D.procList.indexOf(best.p);
+          IOT.tracks.setExpanded('proc' + gi, true);
+          IOT.tracks.setExpanded('dev2080', true);
+          IOT.tracks.setExpanded('dev2080_qh', true);  // queue subgroup
+          const mid = (D.tSub[r] + D.svcEnd[r]) / 2;
+          const span = (D.svcEnd[r] - D.tSub[r]) * 2.1;
+          IOT.ts.setRange(mid - span / 2, mid + span / 2);
+          IOT.state.sel = { type: 'req', id: r, row: null };
+          IOT.state.area = null;
+          // with all other groups collapsed, queue lanes + slot lanes +
+          // the thread row fit one screen when scrolled to top
+          const scroll = document.getElementById('scroll');
+          scroll.scrollTop = 0;
+          IOT.state.scrollTop = 0;
+          IOT.render.renderAll(); IOT.panels.showSelection();
+          const qp = D.reqQLane.get(r);
+          return { r, proc: best.p.name, q, rq_n: R.rq_n[r],
+                   qlane: qp ? 'dev' + qp.dev + '_q' + qp.lane : null,
+                   ins: R.t_ins[r], iss: R.t_iss[r] };
+        })()""")
+        log("lifecycle pick:", pick)
+        assert pick["r"] >= 0 and pick["qlane"], \
+            "no queue-interval request found on dev 2080"
+        # 26a: top of the track list — queue lanes + slot lanes + the
+        # queue->lane arrow of the selected request
+        shot("26a_lifecycle_queue")
+
+        # 26b: same viewport/selection scrolled down so the target thread's
+        # D 状态 / IO 请求 / 文件读取 rows show; hover the queue phase
+        page.evaluate(f"""(() => {{
+          const D = IOT.data.D, r = {pick['r']};
+          const e = D.thrReqs.get(D.req.utid[r]);
+          const si = e.sub.findIndex(s => s.indexOf(r) >= 0);
+          const pi = D.procList.findIndex(p =>
+            p.threads.some(t => t.utid === D.req.utid[r]));
+          const row = IOT.tracks.T.rows.find(x => x.id ===
+            'proc' + pi + '_r' + D.req.utid[r] + '_' + si);
+          const scroll = document.getElementById('scroll');
+          scroll.scrollTop = Math.max(0, row.y0 - 150);
+          IOT.state.scrollTop = scroll.scrollTop;
+          IOT.render.renderAll();
+        }})()""")
+        hpt = page.evaluate(f"""(() => {{
+          const D = IOT.data.D, r = {pick['r']};
+          const e = D.thrReqs.get(D.req.utid[r]);
+          const si = e.sub.findIndex(s => s.indexOf(r) >= 0);
+          const pi = D.procList.findIndex(p =>
+            p.threads.some(t => t.utid === D.req.utid[r]));
+          const row = IOT.tracks.T.rows.find(x => x.id ===
+            'proc' + pi + '_r' + D.req.utid[r] + '_' + si);
+          const scroll = document.getElementById('scroll');
+          const rc = document.getElementById('canvas')
+            .getBoundingClientRect();
+          const a = IOT.ts.tToPx(D.req.t_ins[r]);
+          const b = IOT.ts.tToPx(D.req.t_iss[r]);
+          return {{ x: rc.left + (a + b) / 2,
+                    y: rc.top + row.y0 + row.h / 2 - scroll.scrollTop }};
+        }})()""")
+        page.mouse.move(hpt["x"], hpt["y"])
+        page.wait_for_timeout(200)
+        tip = page.evaluate(
+            "document.getElementById('tooltip').textContent")
+        log("tooltip:", (tip or "").splitlines()[:2])
+        assert tip and ("排队" in tip or "requeue" in tip), \
+            f"tooltip should show a queue/requeue phase: {tip!r}"
+        shot("26b_lifecycle_thread")
+
+        # 27_queue_collapsed: whole trace, 8:32 expanded, queue collapsed
+        page.evaluate("""(() => {
+          IOT.input.hideTip();
+          IOT.state.sel = null;
+          IOT.ts.init(IOT.data.D.dur);
+          IOT.tracks.setExpanded('dev2080_qh', false);
+          IOT.tracks.setExpanded('dev2080', true);
+          document.getElementById('scroll').scrollTop = 0;
+          IOT.state.scrollTop = 0;
+          IOT.render.renderAll();
+        })()""")
+        page.wait_for_timeout(150)
+        shot("27_queue_collapsed")
 
         # ---- stats timing -------------------------------------------------
         stats_ms = page.evaluate("""(() => {

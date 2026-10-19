@@ -96,10 +96,26 @@ def main() -> None:
             c = m.counters
             p(f"  orphan_complete: {c['orphan_complete']:,}  "
               f"incomplete: {c['incomplete']:,}  "
+              f"cmp_lost: {c['cmp_lost']:,}  "
               f"dropped_insert: {c['dropped_insert']:,}")
             p(f"  requeue events mapped: {len(m.requeues):,}  "
               f"requests with rq_n>0: {(req['rq_n'] > 0).sum():,}")
             p(f"  req_tag matched: {req['tag'].notna().sum():,}")
+            # cmp_lost vs genuine incomplete split by rwbs
+            lost = req["cmp_lost"] > 0
+            for label, mask in (("cmp_lost", lost),
+                                ("incomplete", req["t_cmp"].isna() & ~lost)):
+                by = req[mask].groupby("rwbs").size().sort_values(
+                    ascending=False)
+                p(f"  {label} by rwbs: " +
+                  ", ".join(f"{k}:{v}" for k, v in by.items()))
+            # requeue wait quantiles (t_iss - t_iss0 for multi-issue reqs)
+            rqw = (req["t_iss"] - req["t_iss0"]).dropna() / 1e6
+            rqw = rqw[req["issue_count"] > 1]
+            if len(rqw):
+                p(f"  requeue wait (ms): n={len(rqw)} "
+                  f"p50={rqw.quantile(.5):.3f} p99={rqw.quantile(.99):.3f} "
+                  f"max={rqw.max():.3f}")
 
             # ---- file association
             reads = req[req["op"] == "R"]
@@ -150,13 +166,32 @@ def main() -> None:
             # ---- devices
             p("\n-- devices --")
             infl = req.dropna(subset=["t_iss"])
-            iend = infl["t_cmp"].where(
-                infl["t_cmp"].notna(),
-                np.minimum(m.t_max, infl["t_iss"] + 200_000_000))
+            # cmp_lost requests never enter the in-flight computation
+            live = infl[infl["cmp_lost"] == 0]
+            iend = live["t_cmp"].where(
+                live["t_cmp"].notna(),
+                np.minimum(m.t_max, live["t_iss"] + 200_000_000))
+            # peak queue lanes: greedy lowest-free-lane over
+            # [t_ins | t_iss0, t_iss] (same rule as the frontend devQueue)
+            qa = infl["t_ins"].fillna(infl["t_iss0"])
+            qpeak = {}
+            for dname, g in pd.DataFrame(
+                    {"dev": infl["dev"], "a": qa, "b": infl["t_iss"]}
+                    ).groupby("dev"):
+                ends = []
+                for a, b in g[g["b"] > g["a"]].sort_values("a")[
+                        ["a", "b"]].itertuples(index=False, name=None):
+                    for k in range(len(ends)):
+                        if ends[k] <= a:
+                            ends[k] = b
+                            break
+                    else:
+                        ends.append(b)
+                qpeak[dname] = len(ends)
             ev = pd.concat([
-                infl[["dev", "t_iss"]].rename(columns={"t_iss": "ts"})
+                live[["dev", "t_iss"]].rename(columns={"t_iss": "ts"})
                 .assign(d=1),
-                pd.DataFrame({"dev": infl["dev"], "ts": iend}).assign(d=-1)])
+                pd.DataFrame({"dev": live["dev"], "ts": iend}).assign(d=-1)])
             ev = ev.sort_values(["ts", "d"])
             cur = {}
             peak = {}
@@ -169,7 +204,8 @@ def main() -> None:
                 lim = None if pd.isna(r.slot_limit) else int(r.slot_limit)
                 p(f"  dev {r.dev:>8} ({r.name:>8} {r.kind:>4}): "
                   f"lanes={r.lanes} slot_limit={lim} "
-                  f"requests={n:,} peak_in_flight={peak.get(r.dev, 0)}")
+                  f"requests={n:,} peak_in_flight={peak.get(r.dev, 0)} "
+                  f"peak_queue_lanes={qpeak.get(r.dev, 0)}")
 
             # ---- D-state
             p("\n-- D state --")

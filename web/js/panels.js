@@ -89,6 +89,9 @@ IOT.panels = (function () {
         U.fmtNs(R.t_ins[id] - R.t_make[id]) : '-'],
       ['insert→issue', R.t_ins[id] >= 0 && R.t_iss0[id] >= 0 ?
         U.fmtNs(R.t_iss0[id] - R.t_ins[id]) : '-'],
+      ['首次 issue→最后 issue（requeue 等待）',
+        R.t_iss0[id] >= 0 && R.t_iss[id] >= 0 ?
+          U.fmtNs(R.t_iss[id] - R.t_iss0[id]) : '-'],
       ['issue→complete', R.t_cmp[id] >= 0 && R.t_iss[id] >= 0 ?
         U.fmtNs(R.t_cmp[id] - R.t_iss[id]) : '-'],
       ['排队 q', R.t_ins[id] >= 0 && R.t_iss0[id] >= 0 ?
@@ -726,8 +729,9 @@ IOT.panels = (function () {
     ['/', '聚焦搜索框'],
     ['C', '切换配色：类别 / 优先级 / 进程 / 延迟'],
     ['?', '显示 / 隐藏本帮助'],
-    ['点击组标题', '展开 / 折叠轨道组'],
+    ['点击组标题', '展开 / 折叠轨道组（设备组内的「调度队列」子组单独开关）'],
     ['慢 IO 输入框', '标题栏慢 IO 阈值（ms），影响红色描边和慢 IO Tab'],
+    ['分段含义', '实色 = 设备服务，浅色细条 = 调度排队，斜线 = requeue 等待'],
   ];
   function toggleHelp(force) {
     const ov = document.getElementById('helpov');

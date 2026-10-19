@@ -30,6 +30,18 @@ IOT.tracks = (function () {
       expanded, kind: 'dev', di,
       mkRows() {
         const rr = [];
+        const q = D.devQueue ? D.devQueue[di] : null;
+        if (q && q.length) {
+          // 调度队列 subgroup above the slot lanes (design 5.3.1)
+          rr.push(row(this.id + '_qh', 'qgroup', H.subgroup,
+                      `调度队列 · 峰值 ${q.length}`,
+                      { di, qExp: !!this.qExp }));
+          if (this.qExp)
+            for (let s = 0; s < q.length; s++)
+              rr.push(row(this.id + '_q' + s, 'qlane', H.lane,
+                          s % 4 === 0 ? '队列 ' + s : '',
+                          { di, slot: s }));
+        }
         for (let s = 0; s < D.devLanes[di].length; s++) {
           // 10px lanes: label only every 4th to avoid overlap
           rr.push(row(this.id + '_s' + s, 'lane', H.lane,
@@ -116,7 +128,7 @@ IOT.tracks = (function () {
               reqs.sub.forEach((ids, si) => rr.push(row(
                 this.id + '_r' + th.utid + '_' + si, 'treq', H.treq,
                 si === 0 ? `IO 请求 (${reqs.ids.length})` : '',
-                { utid: th.utid, ids })));
+                { utid: th.utid, ids, overflow: reqs.ovIdx === si })));
             }
             if (bts.length)
               rr.push(row(this.id + '_f' + th.utid, 'files', H.files,
@@ -131,9 +143,14 @@ IOT.tracks = (function () {
   }
 
   function toggle(id) {
-    // id may be a top group or a '<sgid>_h' subgroup header
+    // id may be a top group, a '<sgid>_h' subgroup header, or a
+    // '<devid>_qh' queue-subgroup header
     const g = T.byId.get(id);
     if (g) { g.expanded = !g.expanded; relayout(); return; }
+    if (id.endsWith('_qh')) {
+      const dg = T.byId.get(id.slice(0, -3));
+      if (dg) { dg.qExp = !dg.qExp; relayout(); return; }
+    }
     for (const lg of T.groups) {
       if (lg.kind !== 'loopgroup' || !lg.subs) continue;
       const sg = lg.subs.find(s => s.id + '_h' === id);
@@ -143,6 +160,10 @@ IOT.tracks = (function () {
   function setExpanded(id, on) {
     const g = T.byId.get(id);
     if (g && g.expanded !== on) { g.expanded = on; relayout(); return; }
+    if (id.endsWith('_qh')) {
+      const dg = T.byId.get(id.slice(0, -3));
+      if (dg && !!dg.qExp !== on) { dg.qExp = on; relayout(); return; }
+    }
     for (const lg of T.groups) {
       if (lg.kind !== 'loopgroup' || !lg.subs) continue;
       const sg = lg.subs.find(s => s.id + '_h' === id);

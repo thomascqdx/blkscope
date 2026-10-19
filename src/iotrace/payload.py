@@ -129,6 +129,7 @@ def build_payload(m, name: str, source: str) -> dict:
         "err": _ints(req["err"]), "file": _ints(req["file"]),
         "foff": _ints(req["foff"]), "flen": _ints(req["flen"]),
         "fsrc": _ints(req["fsrc"]), "batch": _ints(req["batch"]),
+        "lost": _ints(req["cmp_lost"].fillna(0)),
     }
 
     return {

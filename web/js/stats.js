@@ -48,7 +48,10 @@ IOT.statsMod = (function () {
     for (let i = 0; i < D.nReq; i++) {
       const s = R.t_iss[i];
       if (s < 0) continue;
-      const e = R.t_cmp[i] >= 0 ? R.t_cmp[i] : Math.min(D.t1, s + 200e6);
+      // cmp_lost requests are zero-length (e == s, f = s∈W ? 1 : 0);
+      // the +200ms incomplete rule applies only to cmp_lost = 0
+      const e = R.t_cmp[i] >= 0 ? R.t_cmp[i]
+        : (R.lost[i] ? s : Math.min(D.t1, s + 200e6));
       const ov = e > s ? Math.min(e, W1) - Math.max(s, W0) : 0;
       const f = e > s ? Math.max(0, ov) / (e - s)
         : (s >= W0 && s <= W1 ? 1 : 0);

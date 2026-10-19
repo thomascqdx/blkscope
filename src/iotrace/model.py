@@ -122,7 +122,7 @@ def prio_flags(p: pd.DataFrame, cls, ux, fg_meta) -> pd.Series:
 
 # request record layout inside the state machine
 (_R_DEV, _R_SEC, _R_TINS, _R_INSU, _R_TISS0, _R_TISS, _R_ISSU,
- _R_TCMP, _R_ERR, _R_BYTES, _R_NR, _R_RWBS, _R_ICNT) = range(13)
+ _R_TCMP, _R_ERR, _R_BYTES, _R_NR, _R_RWBS, _R_ICNT, _R_LOST) = range(14)
 
 
 def pair_requests(rq_insert, rq_issue, rq_complete):
@@ -142,8 +142,9 @@ def pair_requests(rq_insert, rq_issue, rq_complete):
             .assign(kind=2, utid=nan, bytes=nan))
     cols = ["dev", "sector", "t_ins", "ins_utid", "t_iss0", "t_iss",
             "iss_utid", "t_cmp", "err", "bytes", "nr_sector", "rwbs",
-            "issue_count"]
-    counters = {"orphan_complete": 0, "dropped_insert": 0, "incomplete": 0}
+            "issue_count", "cmp_lost"]
+    counters = {"orphan_complete": 0, "dropped_insert": 0, "incomplete": 0,
+                "cmp_lost": 0}
     if not parts:
         return pd.DataFrame(columns=cols), counters
 
@@ -154,22 +155,55 @@ def pair_requests(rq_insert, rq_issue, rq_complete):
     cur = None
     pend = None      # inserted, not yet issued
     infl = []        # issued, not yet completed
+
+    def fin_key():
+        # Requests left open when the key ends: cmp_lost if any LATER event
+        # exists on the key (a following in-flight request or a pending
+        # insert); the very last open request is genuinely incomplete.
+        nonlocal pend, infl
+        if pend is not None:
+            for r in infl:
+                r[_R_LOST] = 1
+            reqs.append(pend)
+        else:
+            for r in infl[:-1]:
+                r[_R_LOST] = 1
+        reqs.extend(infl)
+        pend, infl = None, []
+
     for dev, sec, ts, kind, utid, err, b, nr, rw in evs[
             ["dev", "sector", "ts", "kind", "utid", "error", "bytes",
              "nr_sector", "rwbs"]].itertuples(index=False, name=None):
         key = (dev, sec)
         if key != cur:
             # first event of a new key: finalize leftovers of previous key
-            if pend is not None:
-                reqs.append(pend)
-            reqs.extend(infl)
-            cur, pend, infl = key, None, []
+            fin_key()
+            cur = key
         if kind == 0:
             if pend is not None:
                 counters["dropped_insert"] += 1   # merged or lost
-            pend = [dev, sec, ts, utid, nan, nan, nan, nan, nan, b, nr, rw, 0]
+            pend = [dev, sec, ts, utid, nan, nan, nan, nan, nan, b, nr, rw,
+                    0, 0]
         elif kind == 1:
-            if pend is not None:
+            if nr == 0:
+                # dataless issue (e.g. FFS flush): never a requeue; each
+                # issue opens a new request and supersedes any open
+                # dataless request on the same key (design 3.8 补充)
+                for r in infl:
+                    if r[_R_NR] == 0:
+                        r[_R_LOST] = 1
+                if pend is not None:
+                    r, pend = pend, None
+                    r[_R_TISS0] = ts
+                    r[_R_TISS] = ts
+                    r[_R_ISSU] = utid
+                    r[_R_BYTES], r[_R_NR], r[_R_RWBS] = b, nr, rw
+                    r[_R_ICNT] = 1
+                else:
+                    r = [dev, sec, nan, nan, ts, ts, utid, nan, nan,
+                         b, nr, rw, 1, 0]
+                infl.append(r)
+            elif pend is not None:
                 r, pend = pend, None
                 r[_R_TISS0] = ts
                 r[_R_TISS] = ts
@@ -177,32 +211,32 @@ def pair_requests(rq_insert, rq_issue, rq_complete):
                 r[_R_BYTES], r[_R_NR], r[_R_RWBS] = b, nr, rw
                 r[_R_ICNT] = 1
                 infl.append(r)
-            elif infl:
+            elif infl and infl[-1][_R_NR] > 0:
                 r = infl[-1]                      # re-issue after requeue
                 r[_R_TISS] = ts
                 r[_R_ICNT] += 1
                 r[_R_BYTES], r[_R_NR], r[_R_RWBS] = b, nr, rw
             else:                                 # direct issue, no insert
                 infl.append([dev, sec, nan, nan, ts, ts, utid, nan, nan,
-                             b, nr, rw, 1])
+                             b, nr, rw, 1, 0])
         else:
             if infl:
                 r = infl.pop(0)
                 r[_R_TCMP] = ts
                 r[_R_ERR] = err
+                r[_R_LOST] = 0
                 reqs.append(r)
             else:
                 counters["orphan_complete"] += 1
-    if pend is not None:
-        reqs.append(pend)
-    reqs.extend(infl)
+    fin_key()
 
     req = pd.DataFrame(reqs, columns=cols)
     # join keys must be int64 for merge_asof `by=` matching
     req["dev"] = req["dev"].astype("int64")
     req["sector"] = req["sector"].astype("int64")
-    req["incomplete"] = req["t_cmp"].isna()
+    req["incomplete"] = req["t_cmp"].isna() & (req["cmp_lost"] == 0)
     counters["incomplete"] = int(req["incomplete"].sum())
+    counters["cmp_lost"] = int((req["cmp_lost"] > 0).sum())
     return req, counters
 
 
@@ -602,17 +636,22 @@ def build_file_hints(req: pd.DataFrame, files: pd.DataFrame,
 def assign_slots(req: pd.DataFrame, t_max: int):
     """Greedy lowest-free-slot per dev over [t_iss (last issue),
     t_cmp | min(t_max, t_iss + 200ms)] (design 3.5/3.8: only the time a
-    request is actually in the device occupies a lane)."""
+    request is actually in the device occupies a lane).  cmp_lost
+    requests are zero-length: they get a slot for the 1px marker but
+    occupy no lane time."""
     slot = pd.Series(np.nan, index=req.index)
     lanes = {}
-    for dev, g in req.dropna(subset=["t_iss"]).groupby("dev"):
+    g_in = req.dropna(subset=["t_iss"])
+    if "cmp_lost" not in g_in.columns:      # synthetic frames may omit it
+        g_in = g_in.assign(cmp_lost=0)
+    for dev, g in g_in.groupby("dev"):
         busy = []          # heap of (end, slot)
         free = []          # heap of reusable slot ids
         n_slots = 0
-        for idx, start, end in g.sort_values("t_iss")[
-                ["t_iss", "t_cmp"]].itertuples(name=None):
-            end = min(t_max, start + SLOT_INCOMPLETE_NS) \
-                if pd.isna(end) else end
+        for idx, start, end, lost in g.sort_values("t_iss")[
+                ["t_iss", "t_cmp", "cmp_lost"]].itertuples(name=None):
+            end = start if lost else (min(t_max, start + SLOT_INCOMPLETE_NS)
+                                      if pd.isna(end) else end)
             while busy and busy[0][0] <= start:
                 heapq.heappush(free, heapq.heappop(busy)[1])
             if free:
@@ -817,6 +856,11 @@ def build_quality(ex, counters: dict, t_min: int, t_max: int) -> list:
         info("incomplete",
              f"{counters['incomplete']} 个请求到 trace 结束未完成，"
              f"将绘制到窗口末尾")
+    if counters.get("cmp_lost"):
+        info("cmp_lost",
+             f"{counters['cmp_lost']} 个请求没有 complete 事件"
+             f"（多为 flush，内核未上报 block_rq_complete），"
+             f"仅标注下发时刻")
     if counters.get("dropped_insert"):
         info("dropped_insert",
              f"{counters['dropped_insert']} 个 insert 请求在下发前"

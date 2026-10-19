@@ -133,6 +133,131 @@ IOT.render = (function () {
     return `${D.strs[R.rwbs[i]] || ''} ${U.fmtBytes(R.bytes[i])}`;
   }
 
+  // ---- lifecycle segments (design 5.3.1) --------------------------------
+  const qStartOf = i => {
+    const R = IOT.data.D.req;
+    return R.t_ins[i] >= 0 ? R.t_ins[i] : R.t_iss0[i];
+  };
+
+  function hatchSeg(c, x0, x1, yy, ph) {
+    c.save();
+    c.beginPath(); c.rect(x0, yy, Math.max(1, x1 - x0), ph); c.clip();
+    c.strokeStyle = 'rgba(255,255,255,.45)'; c.lineWidth = 1;
+    for (let d = -ph; d < x1 - x0; d += 4) {
+      c.beginPath();
+      c.moveTo(x0 + d, yy + ph); c.lineTo(x0 + d + ph, yy); c.stroke();
+    }
+    c.restore();
+  }
+
+  // badges (RT/UX/FG_META/FUA) + slow-IO outline + selection outline,
+  // all on the whole-request extent [xA, xB]
+  function reqOverlays(c, i, xA, xB, y, h) {
+    const R = IOT.data.D.req;
+    const w = xB - xA;
+    const slow = R.t_cmp[i] >= 0 &&
+      (R.t_cmp[i] - IOT.data.D.tSub[i]) >= IOT.data.D.slowMs * 1e6;
+    if (w >= 4) {
+      const prio = R.prio[i];
+      if (prio & 1) {
+        c.fillStyle = '#e02b2b';
+        c.fillRect(xA, y + 1, Math.max(1, w), 2);
+      }
+      if (prio & 4) {
+        c.fillStyle = '#e84fd8';
+        c.beginPath(); c.moveTo(xA, y + 1); c.lineTo(xA + 6, y + 1);
+        c.lineTo(xA, y + 7); c.fill();
+      }
+      if (prio & 8) {
+        c.fillStyle = '#f4cf3f';
+        c.beginPath(); c.moveTo(xB, y + 1); c.lineTo(xB - 6, y + 1);
+        c.lineTo(xB, y + 7); c.fill();
+      }
+      if (prio & 64) {
+        c.fillStyle = '#fff';
+        c.fillRect(xB - 3, y + h - 4, 3, 2);
+      }
+    }
+    if (slow) {
+      c.strokeStyle = '#ff3b30'; c.lineWidth = 1;
+      c.strokeRect(xA + .5, y + 1.5, Math.max(1, w) - 1, h - 3);
+    }
+    const s = IOT.state && IOT.state.sel;
+    if (s && s.type === 'req' && s.id === i) {
+      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeRect(xA - .5, y + .5, Math.max(2, w) + 1, h - 1);
+    }
+  }
+
+  // segmented lifecycle paint for the thread 'IO 请求' row:
+  // bio 30%/40%h, queue 55%/60%h, requeue 55%/60%h+hatch, service solid
+  function drawReqPhases(c, i, y, h, withLabel) {
+    const D = IOT.data.D, R = D.req;
+    const xA = TS.tToPx(D.tSub[i]), xB = TS.tToPx(D.svcEnd[i]);
+    const w = xB - xA;
+    const base = rectColor(i);
+    if (w < 3) {                       // too small: solid bar, no phases
+      c.fillStyle = base;
+      c.fillRect(xA, y + 1, Math.max(1, w), h - 2);
+    } else {
+      const fillSeg = (a, b, alpha, frac, hatch) => {
+        if (a < 0 || b < 0 || b <= a) return;
+        const xa = TS.tToPx(a), xb = TS.tToPx(b);
+        if (xb - xa < .5) return;
+        const ph = frac >= 1 ? h - 2 : Math.max(1, Math.round(h * frac));
+        const yc = frac >= 1 ? y + 1 : y + (h - ph) / 2;
+        c.globalAlpha = alpha;
+        c.fillStyle = base;
+        c.fillRect(xa, yc, xb - xa, ph);
+        c.globalAlpha = 1;
+        if (hatch) hatchSeg(c, xa, xb, yc, ph);
+      };
+      fillSeg(R.t_make[i], R.t_ins[i], .30, .4, false);     // bio 提交
+      fillSeg(R.t_ins[i], R.t_iss0[i], .55, .6, false);     // 调度排队
+      if (R.rq_n[i] > 0)                                    // requeue 等待
+        fillSeg(R.t_iss0[i], R.t_iss[i], .55, .6, true);
+      fillSeg(R.t_iss[i], D.svcEnd[i], 1, 1, R.t_cmp[i] < 0); // 设备服务
+    }
+    reqOverlays(c, i, xA, xB, y, h);
+    // label on the service segment, or the whole rect when service <30px
+    const xs = R.t_iss[i] >= 0 ? TS.tToPx(R.t_iss[i]) : xA;
+    const ws = xB - xs;
+    let lx = 0, lw = 0;
+    if (!withLabel) return;            // overflow sub-row: rects overlap
+    if (R.t_iss[i] >= 0 && ws > 30) { lx = xs; lw = ws; }
+    else if (w > 30) { lx = xA; lw = w; }
+    if (lw) {
+      c.save(); c.beginPath(); c.rect(lx, y, lw, h); c.clip();
+      c.fillStyle = 'rgba(255,255,255,.9)';
+      c.fillText(reqLabel(i), lx + 3, y + h / 2 + 3);
+      c.restore();
+    }
+  }
+
+  // queue-row segment: [t_ins, t_iss0] queue + [t_iss0, t_iss] requeue
+  function drawQueueSeg(c, i, y, h) {
+    const D = IOT.data.D, R = D.req;
+    const base = rectColor(i);
+    const ph = Math.max(1, Math.round(h * .6));
+    const yc = y + (h - ph) / 2;
+    const seg = (a, b, hatch) => {
+      if (a < 0 || b < 0 || b <= a) return;
+      const xa = TS.tToPx(a), xb = TS.tToPx(b);
+      if (xb - xa < .5) return;
+      c.globalAlpha = .55; c.fillStyle = base;
+      c.fillRect(xa, yc, xb - xa, ph); c.globalAlpha = 1;
+      if (hatch) hatchSeg(c, xa, xb, yc, ph);
+    };
+    if (R.t_ins[i] >= 0) seg(R.t_ins[i], R.t_iss0[i], false);
+    if (R.rq_n[i] > 0) seg(R.t_iss0[i], R.t_iss[i], true);
+    const s = IOT.state && IOT.state.sel;
+    if (s && s.type === 'req' && s.id === i) {
+      const xA = TS.tToPx(qStartOf(i)), xB = TS.tToPx(R.t_iss[i]);
+      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeRect(xA - .5, y + .5, Math.max(2, xB - xA) + 1, h - 1);
+    }
+  }
+
   // generic interval-row painter with sub-pixel merging
   function drawIntervals(c, ids, startOf, endOf, y, h, w, draw) {
     const D = IOT.data.D, V = TS.V;
@@ -187,6 +312,23 @@ IOT.render = (function () {
         c.fillRect(0, y + r.h - 1, w, 1);
         break;
       }
+      case 'qgroup': {                        // 调度队列 subgroup header
+        c.fillStyle = '#1b2027';
+        c.fillRect(0, y, w, r.h);
+        if (!r.qExp) paintQueueSum(c, r.di, y, r.h, w, v0, v1);
+        c.fillStyle = '#101014';
+        c.fillRect(0, y + r.h - 1, w, 1);
+        break;
+      }
+      case 'qlane': {                         // scheduler queue lane
+        c.fillStyle = (r.slot & 1) ? '#1e1f24' : '#1d1e22';
+        c.fillRect(0, y, w, r.h);
+        const l = D.devQueue[r.di][r.slot];
+        const vis = clipIds(l, qStartOf, i => D.req.t_iss[i], v0, v1);
+        drawIntervals(c, vis, qStartOf, i => D.req.t_iss[i], y, r.h, w,
+          (i) => drawQueueSeg(c, i, y, r.h));
+        break;
+      }
 
       case 'ctr': paintCtr(c, r, y, w, v0, v1); break;
 
@@ -207,7 +349,7 @@ IOT.render = (function () {
         c.fillRect(0, y, w, r.h);
         const vis = clipIds(r.ids, i => D.tSub[i], i => D.svcEnd[i], v0, v1);
         drawIntervals(c, vis, i => D.tSub[i], i => D.svcEnd[i], y, r.h, w,
-          (i, x0, ww) => drawReqRect(c, i, x0, x0 + ww, y, r.h, true));
+          (i) => drawReqPhases(c, i, y, r.h, !r.overflow));
         break;
       }
 
@@ -376,6 +518,33 @@ IOT.render = (function () {
       if (!acc[x]) continue;
       const t = acc[x] / mx;
       c.fillStyle = `rgba(232,118,58,${0.15 + 0.85 * t})`;
+      c.fillRect(x, y + 2, 1, hh - 4);
+    }
+  }
+
+  // collapsed 调度队列 header: queue-depth heat strip
+  function paintQueueSum(c, di, y, hh, w, v0, v1) {
+    const D = IOT.data.D;
+    const np = (v1 - v0) / w;
+    const acc = new Float64Array(w);
+    for (const lane of D.devQueue[di]) {
+      const ks = lane._qs ||
+        (lane._qs = Float64Array.from(lane, i => qStartOf(i)));
+      let i0 = U.lowerBound(ks, v0 - 210e6);
+      for (let k = i0; k < lane.length; k++) {
+        const i = lane[k], a = qStartOf(i), b = D.req.t_iss[i];
+        if (a > v1) break;
+        const x0 = U.clamp(Math.floor((a - v0) / np), 0, w - 1);
+        const x1 = U.clamp(Math.ceil((b - v0) / np), 0, w);
+        for (let x = x0; x < x1; x++) acc[x] += 1;
+      }
+    }
+    let mx = 1;
+    for (let x = 0; x < w; x++) mx = Math.max(mx, acc[x]);
+    for (let x = 0; x < w; x++) {
+      if (!acc[x]) continue;
+      const t = acc[x] / mx;
+      c.fillStyle = `rgba(150,170,255,${0.15 + 0.85 * t})`;
       c.fillRect(x, y + 2, 1, hh - 4);
     }
   }

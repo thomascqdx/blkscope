@@ -128,6 +128,65 @@ def test_pair_dropped_insert():
     assert req.iloc[0].t_ins == 120
 
 
+def test_pair_dataless_reissue_becomes_cmp_lost():
+    # dataless issues (FFS flush) on one key: each opens a new request;
+    # the superseded one is closed as cmp_lost (design 3.8 补充)
+    iss = rq_iss([(150, 7, 2080, 0, 0, 0, "FFS"),
+                  (300, 7, 2080, 0, 0, 0, "FFS"),
+                  (450, 7, 2080, 0, 0, 0, "FFS")])
+    req, cnt = pair_requests(pd.DataFrame(), iss, rq_cmp([]))
+    assert len(req) == 3
+    assert (req.issue_count == 1).all()       # no requeue merging
+    assert list(req.cmp_lost) == [1, 1, 0]
+    assert req.t_cmp.isna().all()
+    assert req.iloc[2].incomplete             # last = genuinely in-flight
+    assert cnt["cmp_lost"] == 2 and cnt["incomplete"] == 1
+
+
+def test_pair_data_issue_does_not_merge_dataless():
+    # a data issue on a key whose last in-flight request is dataless
+    # opens a new request (dataless never re-issues), and the dataless
+    # one becomes cmp_lost (a later event exists on the key)
+    iss = rq_iss([(100, 7, 2080, 0, 0, 0, "FFS"),
+                  (150, 7, 2080, 0, 8, 4096, "R")])
+    req, _ = pair_requests(pd.DataFrame(), iss, rq_cmp([]))
+    assert len(req) == 2
+    d = req.iloc[1]
+    assert d.nr_sector == 8 and d.issue_count == 1 and d.t_iss == 150
+    assert req.iloc[0].cmp_lost == 1
+
+
+def test_pair_cmp_lost_on_superseded_by_insert():
+    # an open request followed by a later event (insert) on the same key
+    # is cmp_lost; the pending insert itself is a plain incomplete
+    ins = rq_ins([(100, 7, 2080, 8, 8, 4096, "R"),
+                  (400, 7, 2080, 8, 8, 4096, "R")])
+    iss = rq_iss([(150, 7, 2080, 8, 8, 4096, "R")])
+    req, cnt = pair_requests(ins, iss, rq_cmp([]))
+    assert len(req) == 2
+    issued = req[req.t_iss.notna()].iloc[0]
+    assert issued.cmp_lost == 1          # superseded by the later insert
+    assert req[req.t_ins == 400].iloc[0].cmp_lost == 0   # plain incomplete
+    assert cnt["cmp_lost"] == 1 and cnt["incomplete"] == 1
+
+
+def test_slot_cmp_lost_zero_length():
+    # the cmp_lost flush occupies [t_iss, t_iss]: the lane frees before
+    # the next request instead of holding it for +200ms
+    iss = rq_iss([(150, 7, 2080, 0, 0, 0, "FFS"),
+                  (160, 7, 2080, 0, 0, 0, "FFS"),
+                  (200, 7, 2080, 8, 8, 4096, "R")])
+    cmp_ = rq_cmp([(250, 2080, 8, 8, "R", 0)])
+    req, _ = pair_requests(pd.DataFrame(), iss, cmp_)
+    slot, lanes = assign_slots(req, t_max=300)
+    # buggy +200ms on the lost flush would push the 160-flush to lane 1
+    # and the data req to lane 2 -> lanes == 3
+    assert lanes[2080] == 2
+    fl = req[req.sector == 0]
+    assert fl.iloc[0].cmp_lost == 1 and slot.loc[fl.index[0]] == 0
+    assert fl.iloc[1].cmp_lost == 0 and fl.iloc[1].incomplete
+
+
 # ------------------------------------------------------------- rwbs / prio
 
 @pytest.mark.parametrize("rwbs,cat", [
