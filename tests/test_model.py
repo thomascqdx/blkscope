@@ -8,9 +8,10 @@ from iotrace.model import (
     BATCH_GAP_NS, CAT_DISCARD, CAT_FLUSH, CAT_META, CAT_READAHEAD,
     CAT_SYNC_READ, CAT_WRITE, PRIO_FG_META, PRIO_FUA, PRIO_IDLE, PRIO_META,
     PRIO_RT, PRIO_SYNC, PRIO_UX, assign_slots, associate_files,
-    build_batches, build_dstate, build_files, categorize, enrich_requests,
-    match_make_requests, new_encode_dev, pair_requests, parse_rwbs,
-    parse_slot_limit, prio_flags,
+    build_batches, build_dstate, build_file_hints, build_files,
+    categorize, dev_kind, enrich_requests, match_make_requests,
+    new_encode_dev, pair_requests, parse_rwbs, parse_slot_limit,
+    prio_flags, slot_limits,
 )
 
 
@@ -184,10 +185,14 @@ def test_batches_with_and_without_start():
     assert len(batches) == 3
     b = batches.set_index("batch_id")
     started = b[b.has_start == 1]
-    assert len(started) == 2
-    assert started.page_count.tolist() == [3, 1]
-    nostart = b[b.has_start == 0].iloc[0]
-    assert nostart.page_count == 2 and nostart.page_first == 1
+    # only the leading sub-batch anchors at pc_start
+    assert len(started) == 1
+    assert started.iloc[0].page_count == 3 and started.iloc[0].ts == 100
+    # the 5ms-split continuation starts at its own first fm_add
+    cont = b[(b.has_start == 0) & (b.page_first == 13)].iloc[0]
+    assert cont.page_count == 1 and cont.ts == 102 + 2 * BATCH_GAP_NS
+    nostart = b[b.has_start == 0]
+    assert (nostart.page_count == 2).any()
     assert fad.batch_id.notna().all()
 
 
@@ -258,12 +263,79 @@ def test_assign_slots_reuses_lowest_free():
     assert lanes[2080] == 2
 
 
+def test_slot_interval_uses_last_issue():
+    # A requeued: issues at 100 and 200, completes 300 -> occupies
+    # [200,300]; B [110,120] overlaps A's first issue only -> same lane
+    req = _req_frame([
+        [2080, 1, 90, 1, 100, 200, 1, 300, 0, 1, 1, "R", 2],
+        [2080, 2, np.nan, np.nan, 110, 110, 1, 120, 0, 1, 1, "R", 1],
+    ])
+    slot, lanes = assign_slots(req, t_max=10 ** 12)
+    assert slot.tolist() == [0, 0]
+    assert lanes[2080] == 1
+
+
+def test_slot_incomplete_end_clipped():
+    # A incomplete at 100 -> ends t_iss + 200ms; C inside that window gets
+    # lane 1, B after the clip reuses lane 0
+    gap = 200_000_000
+    req = _req_frame([
+        [2080, 1, np.nan, np.nan, 100, 100, 1, np.nan, 0, 1, 1, "R", 1],
+        [2080, 2, np.nan, np.nan, 100 + 2 * gap, 100 + 2 * gap, 1,
+         100 + 3 * gap, 0, 1, 1, "R", 1],
+        [2080, 3, np.nan, np.nan, 100 + gap // 2, 100 + gap // 2, 1,
+         100 + gap // 2 + 10, 0, 1, 1, "R", 1],
+    ])
+    slot, lanes = assign_slots(req, t_max=100 + 10 * gap)
+    assert slot.tolist() == [0, 0, 1]
+    assert lanes[2080] == 2
+
+
 def test_parse_slot_limit():
     logs = pd.Series(["use_tag: 28 lrb_use: 0x0fffffff", "use_tag: 12",
                       "no tag here"])
     assert parse_slot_limit(logs) == 28
     assert parse_slot_limit(pd.Series(["nothing"])) is None
     assert parse_slot_limit(pd.Series(dtype=object)) is None
+
+
+def test_slot_limits_per_dev():
+    mq_c = pd.DataFrame(
+        {"ts": [1, 2], "dev": [2080, 2080], "sector": [1, 2],
+         "req_tag": [1, 2],
+         "rq_log": ["use_tag: 32 lrb_use: x", "use_tag: 16"]})
+    mq_r = pd.DataFrame(
+        {"ts": [3], "dev": [1976], "sector": [3], "req_tag": [1],
+         "rq_log": ["requeue_reason: 2 use_tag: 5"]})
+    lim = slot_limits(mq_c, mq_r)
+    assert lim[2080] == 32 and lim[1976] == 5
+    # a dev with no mq events has no limit (e.g. loop devices)
+    assert lim.get(1808) is None
+    assert slot_limits(pd.DataFrame(), pd.DataFrame()) == {}
+
+
+def test_dev_kind():
+    assert dev_kind(new_encode_dev(8, 32)) == "disk"
+    assert dev_kind(new_encode_dev(7, 16)) == "loop"
+    assert dev_kind(new_encode_dev(7, 264)) == "loop"  # minor >= 256
+    assert dev_kind(0) == "other"
+
+
+def test_build_file_hints():
+    files = pd.DataFrame(
+        {"s_dev": [1, 1, 1], "ino": [5, 6, 7],
+         "name": ["a.apk", "b.so", "c.dat"], "is_meta": [0, 0, 0]})
+    threads = pd.DataFrame(
+        {"utid": [7, 8], "tid": [7, 8], "thread_name": ["t1", "t2"],
+         "upid": [1, 2], "pid": [1, 2],
+         "process_name": ["app", "sys"]})
+    req = pd.DataFrame(
+        {"op": ["R", "R", "R", "W"],
+         "file": [0.0, 0.0, 1.0, np.nan],
+         "utid": [7, 8, 8, 8],
+         "bytes": [100, 10, 60, 999]})
+    hint = build_file_hints(req, files, threads)
+    assert hint.tolist() == ["app", "sys", ""]
 
 
 # --------------------------------------------------------------- requeues

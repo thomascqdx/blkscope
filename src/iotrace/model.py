@@ -24,6 +24,7 @@ TAG_MATCH_TOL_NS = 1_000_000     # 1 ms: mq_complete -> t_complete
 D_BLK_SLACK_NS = 1_000_000       # blocked event within [D.ts, D.end + 1ms]
 D_END_SLACK_NS = 50_000          # 50 us after D end for own-request wait
 D_END_BACK_NS = 100_000          # 100 us before D end for io_wait guess
+SLOT_INCOMPLETE_NS = 200_000_000  # incomplete request slot end: t_iss + 200ms
 
 CAT_SYNC_READ, CAT_READAHEAD, CAT_META, CAT_WRITE = 0, 1, 2, 3
 CAT_FLUSH, CAT_DISCARD, CAT_OTHER = 4, 5, 6
@@ -450,12 +451,18 @@ def build_batches(pc_start: pd.DataFrame, fm_add: pd.DataFrame,
             ["utid", "pc_idx", "sub"], sort=True).ngroup()
         fa.loc[hit.index, "batch_id"] = hit["batch_code"].astype(float)
         gb = hit.groupby("batch_code", sort=True)
-        starts = gb.agg(utid=("utid", "first"), ts=("pc_ts", "min"),
+        starts = gb.agg(utid=("utid", "first"), ts=("ts", "min"),
+                        pc_ts=("pc_ts", "min"), sub=("sub", "min"),
                         t_last_add=("ts", "max"), fkey=("fkey", "first"),
                         page_first=("index", "min"),
                         page_count=("ts", "size")) \
             .rename_axis("batch_id").reset_index()
-        starts["has_start"] = np.int64(1)
+        # sub>0 sub-batches begin at their own first fm_add and carry
+        # has_start=0; only the leading sub-batch starts at pc_start
+        starts["has_start"] = np.where(starts["sub"] == 0,
+                                       np.int64(1), np.int64(0))
+        starts["ts"] = np.where(starts["sub"] == 0, starts["pc_ts"],
+                                starts["ts"])
 
     # no-start batches: consecutive unmatched rows, same fkey, gap <= 5ms,
     # never continuing across a matched row.
@@ -569,20 +576,43 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
     return req
 
 
+def build_file_hints(req: pd.DataFrame, files: pd.DataFrame,
+                     threads: pd.DataFrame) -> pd.Series:
+    """files.hint: process name owning the most associated READ bytes of
+    this file (design 3.8); '' when none. Same basename often maps to many
+    files, so the hint disambiguates (frontend: 'base.apk · com.xxx')."""
+    hint = pd.Series("", index=files.index, dtype=object)
+    if not (len(files) and len(req) and len(threads)):
+        return hint
+    rf = req[req["op"] == "R"].dropna(subset=["file", "utid"])
+    if not len(rf):
+        return hint
+    pname = threads.dropna(subset=["utid"]).drop_duplicates("utid") \
+        .set_index("utid")["process_name"].fillna("")
+    proc = rf["utid"].astype("int64").map(pname).fillna("")
+    gb = rf.groupby([rf["file"].astype("int64"), proc])["bytes"].sum()
+    top = gb.groupby(level=0).idxmax()          # file_id -> (file_id, proc)
+    best = pd.Series({int(fid): str(p[1]) for fid, p in top.items()})
+    hint.loc[best.index] = best
+    return hint
+
+
 # ------------------------------------------------------------- 3.5 slots
 
 def assign_slots(req: pd.DataFrame, t_max: int):
-    """Greedy lowest-free-slot per dev over [t_iss0, t_cmp|t_max]
-    (design 3.5). Returns (slot Series aligned to req.index, lanes per dev)."""
+    """Greedy lowest-free-slot per dev over [t_iss (last issue),
+    t_cmp | min(t_max, t_iss + 200ms)] (design 3.5/3.8: only the time a
+    request is actually in the device occupies a lane)."""
     slot = pd.Series(np.nan, index=req.index)
     lanes = {}
-    for dev, g in req.dropna(subset=["t_iss0"]).groupby("dev"):
+    for dev, g in req.dropna(subset=["t_iss"]).groupby("dev"):
         busy = []          # heap of (end, slot)
         free = []          # heap of reusable slot ids
         n_slots = 0
-        for idx, start, end in g.sort_values("t_iss0")[
-                ["t_iss0", "t_cmp"]].itertuples(name=None):
-            end = t_max if pd.isna(end) else end
+        for idx, start, end in g.sort_values("t_iss")[
+                ["t_iss", "t_cmp"]].itertuples(name=None):
+            end = min(t_max, start + SLOT_INCOMPLETE_NS) \
+                if pd.isna(end) else end
             while busy and busy[0][0] <= start:
                 heapq.heappush(free, heapq.heappop(busy)[1])
             if free:
@@ -603,6 +633,38 @@ def parse_slot_limit(rq_log: pd.Series):
     v = rq_log.dropna().astype(str).str.extract(_USETAG_RE, expand=False)
     v = pd.to_numeric(v, errors="coerce").dropna()
     return int(v.max()) if len(v) else None
+
+
+def slot_limits(mq_complete: pd.DataFrame, mq_requeue: pd.DataFrame) -> dict:
+    """Per-dev slot_limit = max 'use_tag: N' of THAT dev's rq_log;
+    devs with no mq events are simply absent (design 3.8: loop devices
+    have no such logs -> null)."""
+    frames = [df[["dev", "rq_log"]] for df in (mq_complete, mq_requeue)
+              if len(df)]
+    if not frames:
+        return {}
+    logs = pd.concat(frames, ignore_index=True).dropna(subset=["dev"])
+    logs["use_tag"] = pd.to_numeric(
+        logs["rq_log"].fillna("").astype(str)
+        .str.extract(_USETAG_RE, expand=False), errors="coerce")
+    lim = logs.groupby(logs["dev"].astype("int64"))["use_tag"].max()
+    return {int(d): (int(l) if not pd.isna(l) else None)
+            for d, l in lim.items()}
+
+
+def dev_major(dev) -> int:
+    """Major number of a new_encode_dev-encoded device."""
+    return (int(dev) >> 8) & 0xFFF
+
+
+def dev_kind(dev) -> str:
+    """major 7 -> 'loop', major 0 -> 'other', else 'disk' (design 3.8)."""
+    maj = dev_major(dev)
+    if maj == 7:
+        return "loop"
+    if maj == 0:
+        return "other"
+    return "disk"
 
 
 # ------------------------------------------------------ 3.6 dstate/blocked
@@ -791,6 +853,7 @@ def build_model(ex) -> Model:
     m.batches, fa = build_batches(ex.pc_start, ex.fm_add, key2id)
     if len(req):
         req = associate_files(req, fa, ex.pc_start, key2id)
+    m.files["hint"] = build_file_hints(req, m.files, ex.threads)
     # a batch's slice extends to the t_cmp of associated requests
     if len(m.batches) and len(req) and req["batch"].notna().any():
         rb = req.dropna(subset=["batch", "t_cmp"])
@@ -805,18 +868,17 @@ def build_model(ex) -> Model:
     (m.dst, m.wait_off, m.wait_req, m.wait_src) = build_dstate(
         ex.dstate, ex.blocked, req, io_utids, ex.threads)
 
-    # per-dev summary: lanes + slot_limit from rq_log 'use_tag: N'
-    logs = pd.concat([ex.mq_complete["rq_log"], ex.mq_requeue["rq_log"]]) \
-        if len(ex.mq_complete) or len(ex.mq_requeue) \
-        else pd.Series(dtype=object)
-    lim_all = parse_slot_limit(logs)
+    # per-dev summary: lanes + kind + per-dev slot_limit (design 3.8)
+    lim_by_dev = slot_limits(ex.mq_complete, ex.mq_requeue)
     rows = [{"dev": int(dev), "name": new_decode_dev(dev),
+             "kind": dev_kind(dev),
              "lanes": int(req.loc[req["dev"] == dev, "lanes"].max())
              if "lanes" in req else 0,
-             "slot_limit": lim_all}
+             "slot_limit": lim_by_dev.get(int(dev))}
             for dev in sorted(req["dev"].dropna().unique())] if len(req) \
         else []
-    m.devs = pd.DataFrame(rows, columns=["dev", "name", "lanes", "slot_limit"])
+    m.devs = pd.DataFrame(
+        rows, columns=["dev", "name", "kind", "lanes", "slot_limit"])
 
     m.quality = build_quality(ex, counters, ex.t_min, ex.t_max)
     for c in ("t_make", "mk_pid", "cls", "lvl", "ux", "fg_meta", "utid",

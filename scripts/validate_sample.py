@@ -55,7 +55,10 @@ def main() -> None:
             tp = open_trace(tp_path)
             timings["open+load"] = time.time() - t
             t = time.time()
-            ex = extract_all(tp)
+            try:
+                ex = extract_all(tp)
+            finally:
+                tp.close()
             timings["extract"] = time.time() - t
             t = time.time()
             m = build_model(ex)
@@ -119,11 +122,13 @@ def main() -> None:
             rf = req.dropna(subset=["file"])
             fb = rf.groupby(rf["file"].astype("int64"))["bytes"] \
                 .agg(["sum", "count"])
-            fb = fb.join(m.files["name"]).sort_values("sum", ascending=False)
+            fb = fb.join(m.files[["name", "hint"]]) \
+                .sort_values("sum", ascending=False)
             p("  top 15 by associated request bytes:")
             for _, r in fb.head(15).iterrows():
+                hint = f" · {r['hint']}" if r.get("hint") else ""
                 p(f"    {r['sum'] / 1e6:>9.1f} MB  n={int(r['count']):>6}  "
-                  f"{r['name']}")
+                  f"{r['name']}{hint}")
 
             # ---- bytes by category
             cat_names = {0: "sync_read", 1: "readahead", 2: "meta",
@@ -145,11 +150,13 @@ def main() -> None:
             # ---- devices
             p("\n-- devices --")
             infl = req.dropna(subset=["t_iss"])
+            iend = infl["t_cmp"].where(
+                infl["t_cmp"].notna(),
+                np.minimum(m.t_max, infl["t_iss"] + 200_000_000))
             ev = pd.concat([
                 infl[["dev", "t_iss"]].rename(columns={"t_iss": "ts"})
                 .assign(d=1),
-                infl.dropna(subset=["t_cmp"])[["dev", "t_cmp"]]
-                .rename(columns={"t_cmp": "ts"}).assign(d=-1)])
+                pd.DataFrame({"dev": infl["dev"], "ts": iend}).assign(d=-1)])
             ev = ev.sort_values(["ts", "d"])
             cur = {}
             peak = {}
@@ -159,9 +166,10 @@ def main() -> None:
                     peak[dname] = cur[dname]
             for r in m.devs.itertuples():
                 n = int((req["dev"] == r.dev).sum())
-                p(f"  dev {r.dev:>8} ({r.name:>8}): lanes={r.lanes} "
-                  f"slot_limit={r.slot_limit} requests={n:,} "
-                  f"peak_in_flight={peak.get(r.dev, 0)}")
+                lim = None if pd.isna(r.slot_limit) else int(r.slot_limit)
+                p(f"  dev {r.dev:>8} ({r.name:>8} {r.kind:>4}): "
+                  f"lanes={r.lanes} slot_limit={lim} "
+                  f"requests={n:,} peak_in_flight={peak.get(r.dev, 0)}")
 
             # ---- D-state
             p("\n-- D state --")

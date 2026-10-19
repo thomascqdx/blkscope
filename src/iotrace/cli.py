@@ -27,7 +27,10 @@ def _process(name: str, path: str, outdir: str, write_json: bool) -> int:
 
     t0 = time.time()
     tp = open_trace(path)
-    ex = extract_all(tp)
+    try:
+        ex = extract_all(tp)
+    finally:
+        tp.close()
     model = build_model(ex)
     payload = build_payload(model, name=name, source=os.path.basename(path))
     elapsed = time.time() - t0

@@ -11,6 +11,7 @@ from __future__ import annotations
 import contextlib
 import os
 import re
+import sys
 import tempfile
 import zipfile
 from typing import Iterator, List, Tuple
@@ -56,10 +57,16 @@ def looks_like_trace(head: bytes) -> bool:
 def _extract_zip(path: str, outdir: str) -> List[Tuple[str, str]]:
     kept: List[Tuple[str, str]] = []
     zip_stem = os.path.splitext(os.path.basename(path))[0]
+    base = os.path.normcase(os.path.realpath(outdir))
     with zipfile.ZipFile(path) as zf:
         members = [i for i in zf.infolist() if not i.is_dir()]
         for info in members:
-            dest = os.path.join(outdir, info.filename.replace("/", os.sep))
+            dest = os.path.normcase(os.path.realpath(
+                os.path.join(outdir, info.filename.replace("/", os.sep))))
+            if dest != base and not dest.startswith(base + os.sep):
+                print(f"warning: skipping zip member outside extraction "
+                      f"dir: {info.filename}", file=sys.stderr)
+                continue
             os.makedirs(os.path.dirname(dest), exist_ok=True)
             with zf.open(info) as src, open(dest, "wb") as dst:
                 while chunk := src.read(1 << 20):

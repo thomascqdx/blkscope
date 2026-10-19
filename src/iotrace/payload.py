@@ -69,12 +69,13 @@ def build_payload(m, name: str, source: str) -> dict:
                    "name": st.col(th["thread_name"]),
                    "upid": _ints(th["upid"])}
 
-    files = {"name": [], "dev": [], "ino": [], "meta": []}
+    files = {"name": [], "dev": [], "ino": [], "meta": [], "hint": []}
     if len(m.files):
         files = {"name": st.col(m.files["name"]),
                  "dev": _ints(m.files["s_dev"]),
                  "ino": _ints(m.files["ino"]),
-                 "meta": _ints(m.files["is_meta"])}
+                 "meta": _ints(m.files["is_meta"]),
+                 "hint": st.col(m.files["hint"])}
 
     batches = {"utid": [], "ts": [], "end": [], "file": [], "page0": [],
                "pages": [], "start": []}
@@ -107,7 +108,8 @@ def build_payload(m, name: str, source: str) -> dict:
 
     devs = []
     if len(m.devs):
-        devs = [{"dev": int(r.dev), "name": r.name, "lanes": int(r.lanes),
+        devs = [{"dev": int(r.dev), "name": r.name, "kind": r.kind,
+                 "lanes": int(r.lanes),
                  "slot_limit": (int(r.slot_limit)
                                 if not pd.isna(r.slot_limit) else None)}
                 for r in m.devs.itertuples()]

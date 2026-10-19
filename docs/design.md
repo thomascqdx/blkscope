@@ -124,6 +124,21 @@ rwbs 首段字母：`F` 前缀 = preflush，`R` 读，`W` 写，`D` discard，`N
 缺少 IO 事件（无 block_rq_*）；缺少传音事件（文件关联 / 优先级不可用）；block function 未符号化（caller 是整数且 `blocked_function` 全空），并附抓取建议（用更大 buffer 或 DISCARD 模式，确保 kernel symbols 被保留）；
 orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_overrun_end - ftrace_cpu_overrun_begin > 0`（录制期间有事件丢失）。
 
+## 3.8 实现修订（基于样例数据，取代上文对应条目）
+
+- 3.2：make_request 匹配**额外限定为提交线程**（insert 的 utid，直接下发的用 issue 的 utid）+ sector + 操作字母 + 50ms。
+  原因：只按 sector 匹配时，热点共享文件的扇区会匹配到其他线程的 make 事件。
+- 3.1：requeue 事件的匹配窗口从 `t_insert`（没有则 `t_issue_first`）开始，因为传音的 mq requeue 多发生在 insert 和首次 issue 之间。
+- 3.5：槽位区间改为 **`[t_issue（最后一次下发）, t_complete]`**，即真正占用设备的时间段；
+  之前被 requeue 的那几次下发不占槽位（在详情中展示）。未完成请求的区间终点取 `min(t_max, t_issue + 200ms)`。
+  这样泳道数应该接近实际的最大在途数（样例约 33）。
+- 3.5：`slot_limit` **按 dev 分别统计**，只解析该 dev 的 mq 事件的 rq_log；没有就是 null。样例中 8:32 为 32。
+- 设备类型 `kind`：major 7 是 `loop`（loop 设备的 IO 会再落到底层物理设备，算全局总量时会重复计入）；major 0 是 `other`；其余是 `disk`。
+  前端的全局 / 进程统计**默认只算 `disk`**，可以切换为包含 loop。
+- 文件提示 `hint`：同一个基名（如 `base.apk`）会对应很多不同文件。每个文件取关联读字节数最多的进程名作为 hint，前端显示成 `base.apk · com.xxx`。
+- 读批次被 5ms 间隔切开后，后面子批次的起点是该子批次第一个 fm_add 的时间，`has_start` 为 0（只有第一个子批次的起点是 pc_start）。
+- zip 解包要防止路径穿越（成员路径必须落在临时目录内）；每个 trace 处理完要关闭 trace_processor 进程。
+
 ## 4. Payload（payload.py）
 
 顶层 JSON，按列存储，字符串池化（`strs` 数组 + 列中存下标）；时间相对于 `t0 = 有效时间窗起点`，单位 ns，缺失值用 -1。
@@ -136,14 +151,14 @@ orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_
   "strs": ["..."],
   "procs":   {"upid":[], "pid":[], "name":[/*str idx*/]},
   "threads": {"utid":[], "tid":[], "name":[], "upid":[]},
-  "devs":    [{"dev": 2080, "name": "8:32", "lanes": 38, "slot_limit": 28}],
+  "devs":    [{"dev": 2080, "name": "8:32", "kind": "disk", "lanes": 33, "slot_limit": 32}],
   "req": {   // 按 t_issue_first 排序；数组下标即请求 id
     "dev":[], "sector":[], "bytes":[], "rwbs":[/*str*/], "cat":[], "prio":[/*prio_flags*/],
     "cls":[], "lvl":[], "t_make":[], "t_ins":[], "t_iss0":[], "t_iss":[], "t_cmp":[],
     "utid":[], "slot":[], "tag":[], "rq_n":[], "rq_reason":[], "err":[],
     "file":[], "foff":[], "flen":[], "fsrc":[], "batch":[]
   },
-  "files":   {"name":[/*str*/], "dev":[], "ino":[], "meta":[]},
+  "files":   {"name":[/*str*/], "dev":[], "ino":[], "meta":[], "hint":[/*str，进程名或空*/]},
   "batches": {"utid":[], "ts":[], "end":[], "file":[], "page0":[], "pages":[], "start":[/*has_start*/]},
   "dst":     {"utid":[], "ts":[], "dur":[], "fn":[/*str*/], "fn_ok":[], "iow":[], "wait_off":[], "wait_req":[], "wait_src":[]},
   "requeues":{"ts":[], "req":[], "reason":[]}
