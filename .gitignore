@@ -1,0 +1,19 @@
+# Python
+.venv/
+__pycache__/
+*.pyc
+*.egg-info/
+.pytest_cache/
+build/
+dist/
+
+# Local scratch & large artifacts
+work/
+out/
+samples/
+*.trace
+*.pftrace
+*.perfetto-trace
+
+# trace_processor binary (fetched by scripts/fetch_tp.py)
+tools/trace_processor_shell*

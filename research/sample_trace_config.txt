@@ -1,0 +1,101 @@
+buffers {
+  size_kb: 202752
+  fill_policy: RING_BUFFER
+}
+buffers {
+  size_kb: 2048
+  fill_policy: RING_BUFFER
+}
+data_sources {
+  config {
+    name: "android.packages_list"
+    target_buffer: 1
+  }
+}
+data_sources {
+  config {
+    name: "android.gpu.memory"
+  }
+}
+data_sources {
+  config {
+    name: "linux.process_stats"
+    target_buffer: 1
+    process_stats_config {
+      scan_all_processes_on_start: true
+      proc_stats_poll_ms: 1000
+    }
+  }
+}
+data_sources {
+  config {
+    name: "linux.sys_stats"
+    sys_stats_config {
+      cpufreq_period_ms: 1000
+    }
+  }
+}
+data_sources {
+  config {
+    name: "android.surfaceflinger.frametimeline"
+  }
+}
+data_sources {
+  config {
+    name: "linux.ftrace"
+    ftrace_config {
+      ftrace_events: "sched/sched_switch"
+      ftrace_events: "power/suspend_resume"
+      ftrace_events: "sched/sched_wakeup"
+      ftrace_events: "sched/sched_wakeup_new"
+      ftrace_events: "sched/sched_waking"
+      ftrace_events: "power/cpu_frequency"
+      ftrace_events: "power/cpu_idle"
+      ftrace_events: "sched/sched_process_exit"
+      ftrace_events: "sched/sched_process_free"
+      ftrace_events: "task/task_newtask"
+      ftrace_events: "task/task_rename"
+      ftrace_events: "lowmemorykiller/lowmemory_kill"
+      ftrace_events: "oom/oom_score_adj_update"
+      ftrace_events: "ftrace/print"
+      ftrace_events: "power/gpu_frequency"
+      ftrace_events: "sched/sched_blocked_reason"
+      ftrace_events: "trans_sched/dump_info"
+      ftrace_events: "block/block_rq_insert"
+      ftrace_events: "block/block_rq_issue"
+      ftrace_events: "block/block_rq_complete"
+      ftrace_events: "power/cpu_frequency_limits"
+      ftrace_events: "tran_fs/tran_fs_pagecache_start"
+      ftrace_events: "tran_block_feature/block_rq_mq_complete_request"
+      ftrace_events: "tran_block_feature/block_rq_mq_requeue_request"
+      ftrace_events: "tran_block_feature/block_rq_mq_make_request"
+      atrace_categories: "am"
+      atrace_categories: "aidl"
+      atrace_categories: "dalvik"
+      atrace_categories: "binder_lock"
+      atrace_categories: "binder_driver"
+      atrace_categories: "gfx"
+      atrace_categories: "input"
+      atrace_categories: "sm"
+      atrace_categories: "ss"
+      atrace_categories: "view"
+      atrace_categories: "webview"
+      atrace_categories: "pagecache"
+      atrace_categories: "tran_fs"
+      atrace_categories: "atomic_io"
+      atrace_apps: "*"
+    }
+  }
+}
+enable_extra_guardrails: false
+statsd_metadata {
+}
+write_into_file: true
+file_write_period_ms: 604800000
+flush_period_ms: 10000
+incremental_state_config {
+  clear_period_ms: 5000
+}
+statsd_logging: STATSD_LOGGING_DISABLED
+trace_uuid_msb: -8510970618474610722
+trace_uuid_lsb: 2726525584946025734
