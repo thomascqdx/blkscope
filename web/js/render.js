@@ -607,6 +607,15 @@ IOT.render = (function () {
         }
       }
       host._gen = T.rows;
+      host._selRid = undefined;          // rebuild cleared highlights
+    }
+    // highlight the row of the current selection (e.g. a clicked thead)
+    const selRow = IOT.state.sel && IOT.state.sel.row;
+    const rid = selRow ? selRow.id : null;
+    if (rid !== host._selRid) {
+      for (const d of host.children)
+        d.classList.toggle('sel', d.dataset.rid === rid);
+      host._selRid = rid;
     }
     host.style.height = T.totalH + 'px';
     host.style.transform = `translateY(${-IOT.state.scrollTop}px)`;

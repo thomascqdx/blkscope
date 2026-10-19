@@ -53,6 +53,12 @@ IOT.input = (function () {
 
     window.addEventListener('wheel', onWheel, { passive: false });
     window.addEventListener('keydown', onKeyDown);
+    // remember whether the latest mousedown was inside the bottom panel —
+    // Ctrl+A there selects panel text instead of the whole trace
+    window.addEventListener('mousedown', e => {
+      mouseInPanel = !!(e.target && e.target.closest &&
+                        e.target.closest('#panel'));
+    }, true);
     window.addEventListener('keyup', e => keys.delete(e.code));
     window.addEventListener('blur', () => keys.clear());
 
@@ -246,6 +252,7 @@ IOT.input = (function () {
 
   // ---------------- mouse drags ----------------
   let drag = null;   // {kind, x0, y0, v0, v1, area?...}
+  let mouseInPanel = false;
   function onDown(e, zone) {
     if (e.button !== 0) return;
     const el = zone === 'ruler' ? document.getElementById('ruler')
@@ -376,7 +383,11 @@ IOT.input = (function () {
     const r = TR.rowAt(y);
     if (r && r.type === 'group') { TR.toggle(r.id); requestRender(); }
   }
-  function onSplitDown(e) { drag = { kind: 'split' }; e.preventDefault(); }
+  function onSplitDown(e) {
+    document.getElementById('panel').classList.remove('collapsed');
+    drag = { kind: 'split' };
+    e.preventDefault();
+  }
 
   // ---------------- wheel ----------------
   function onWheel(e) {
@@ -407,21 +418,31 @@ IOT.input = (function () {
 
   function onKeyDown(e) {
     if (editable(e)) return;
+    // ctrl/meta combos first — they must not fall into the WASD
+    // hold-key switch below (Ctrl+A would pan left otherwise)
+    if (e.ctrlKey || e.metaKey) {
+      if (e.code === 'KeyA') {
+        if (mouseInPanel) {                  // select all panel text
+          const r = document.createRange();
+          r.selectNodeContents(document.getElementById('panelbody'));
+          const s = getSelection();
+          s.removeAllRanges(); s.addRange(r);
+        } else {                             // select whole trace
+          IOT.state.area = { t0: 0, t1: D.dur, rows: null };
+          IOT.state.sel = null;
+          IOT.panels.activate('area');
+          requestRender();
+        }
+        e.preventDefault();
+      }
+      return;
+    }
     switch (e.code) {
       case 'KeyW': case 'KeyS': case 'KeyA': case 'KeyD':
         keys.add(e.code); startHold();
         e.preventDefault();
         return;
       default: break;
-    }
-    if (e.ctrlKey || e.metaKey) {
-      if (e.code === 'KeyA') {               // select whole trace
-        IOT.state.area = { t0: 0, t1: D.dur, rows: null };
-        IOT.state.sel = null;
-        IOT.panels.activate('area');
-        requestRender(); e.preventDefault();
-      }
-      return;
     }
     switch (e.code) {
       case 'KeyF': {                          // zoom to selection
@@ -470,6 +491,8 @@ IOT.input = (function () {
       }
       case 'BracketLeft': navStep(-1); break;
       case 'BracketRight': navStep(1); break;
+      case 'KeyQ':                            // collapse/expand panel
+        IOT.panels.togglePanel(); break;
       case 'KeyC':
         IOT.paint.cycle();
         requestRender(); break;

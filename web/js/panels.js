@@ -17,7 +17,12 @@ IOT.panels = (function () {
       const d = U.el('div', 'tab' + (t.id === active ? ' active' : ''), host);
       d.textContent = t.label;
       d.dataset.tid = t.id;
-      d.addEventListener('mousedown', () => activate(t.id));
+      d.addEventListener('mousedown', () => {
+        // clicking a tab always expands a collapsed panel
+        document.getElementById('panel').classList.remove('collapsed');
+        IOT.requestRender();
+        activate(t.id);
+      });
     }
   }
   function refresh() {
@@ -37,6 +42,16 @@ IOT.panels = (function () {
   }
   function showSelection() { refresh(); }
 
+  // drawer: collapse to just the tab bar / expand again.
+  // force = desired collapsed state (omitted = toggle)
+  function togglePanel(force) {
+    const p = document.getElementById('panel');
+    const col = force !== undefined ? force
+      : !p.classList.contains('collapsed');
+    p.classList.toggle('collapsed', col);
+    IOT.requestRender();           // canvas must pick up the new height
+  }
+
   // ---------------- details renderers ----------------
   function table(host, rows) {
     const tb = U.el('table', '', host);
@@ -52,6 +67,20 @@ IOT.panels = (function () {
       if (opts && opts.mark) vd.classList.add('mark');
     }
     return tb;
+  }
+
+  // click handler that ignores clicks finishing a text selection
+  // (panel body is user-select:text): only swallow the click when the
+  // selection changed since this press's mousedown — a plain click that
+  // lands inside an existing selection must still work
+  let selAtDown = '';
+  function onTextClick(el, fn) {
+    el.addEventListener('click', () => {
+      const s = getSelection();
+      const t = s && !s.isCollapsed ? s.toString() : '';
+      if (t.trim() && t !== selAtDown) return;
+      fn();
+    });
   }
 
   function prFlags(p) {
@@ -130,7 +159,7 @@ IOT.panels = (function () {
       for (const di of waits) {
         const a = U.el('span', 'lk', wl);
         a.textContent = `#${di}`;
-        a.addEventListener('mousedown', () => {
+        onTextClick(a, () => {
           IOT.state.sel = { type: 'd', id: di, row: null };
           IOT.state.area = null;
           IOT.debug.locateD(di);
@@ -169,7 +198,7 @@ IOT.panels = (function () {
           const g = U.el('span', 'guess', a);
           g.textContent = '推测';
         }
-        a.addEventListener('mousedown', () => {
+        onTextClick(a, () => {
           IOT.state.sel = { type: 'req', id: rid, row: null };
           IOT.state.area = null;
           IOT.debug.locateRequest(rid);
@@ -221,21 +250,84 @@ IOT.panels = (function () {
     ]);
   }
 
+  // ---------------- 当前选择: area summary ----------------
+  let selKind = 'proc';          // 'proc' | 'thr', persists across refresh
+  let selTopN = 10;              // 5 | 10 | 20
+  const TOPN_COLS = [
+    { k: 'rank', label: '排名', num: 1 },
+    { k: 'name', label: '名称' },
+    { k: 'rate', label: '速度', num: 1 },
+    { k: 'bytes', label: '字节', num: 1 },
+    { k: 'share', label: '占比', num: 1 },
+  ];
+
   function areaDetail(host, area) {
-    const D = IOT.data.D, R = D.req;
-    let nReq = 0, bytes = 0;
-    for (let i = 0; i < D.nReq; i++) {         // cheap count for now
-      if (R.t_iss[i] < 0) continue;
-      if (R.t_iss[i] < area.t1 && D.svcEnd[i] > area.t0) {
-        nReq++; bytes += R.bytes[i];
-      }
-    }
+    const D = IOT.data.D;
+    const S = IOT.stats(area.t0, area.t1, { inclLoop: D.inclLoop });
+    const span = Math.max(1, S.w1 - S.w0);
     table(host, [
       ['选区范围', `${U.fmtNsPrec(area.t0)} ~ ${U.fmtNsPrec(area.t1)}`],
       ['时长', U.fmtNs(area.t1 - area.t0)],
       ['覆盖轨道', area.rows ? String(area.rows.size) : '全部'],
-      ['覆盖请求', `${nReq}（共 ${U.fmtBytes(bytes)}）`],
+      ['请求数', String(S.n)],
+      ['总量', fmtB(S.total)],
+      ['读', fmtB(S.read)],
+      ['写', fmtB(S.write)],
+      ['其他', fmtB(S.other)],
+      ['读速度', fmtRateMBs(S.read, span)],
+      ['写速度', fmtRateMBs(S.write, span)],
+      ['总速度', fmtRateMBs(S.total, span)],
     ]);
+    const note = U.el('div', 'winnote', host);
+    note.textContent = (D.inclLoop ? '含 loop 设备' : '仅 disk 设备') +
+      ' · 字节按 issue→complete 与选区重叠比例分摊；速度 = 字节 / 选区时长';
+
+    // controls: [进程|线程] [Top 5|10|20]
+    const ctl = U.el('div', 'subsel', host);
+    const mkSub = (label, on, fn) => {
+      const b = U.el('div', 'subtab' + (on ? ' active' : ''), ctl);
+      b.textContent = label;
+      b.addEventListener('mousedown', fn);
+    };
+    for (const [id, label] of [['proc', '进程'], ['thr', '线程']])
+      mkSub(label, selKind === id, () => { selKind = id; refresh(); });
+    U.el('span', 'subgap', ctl);
+    for (const n of [5, 10, 20])
+      mkSub('Top ' + n, selTopN === n, () => { selTopN = n; refresh(); });
+
+    // two rankings side by side
+    const wrap = U.el('div', 'topwrap', host);
+    for (const op of ['read', 'write']) {
+      const box = U.el('div', 'topbox', wrap);
+      U.el('div', 'topname', box).textContent =
+        (op === 'read' ? '读速度' : '写速度') + ' Top ' + selTopN;
+      const items = IOT.statsMod.topN(S, selKind, op, selTopN);
+      if (!items.length) {
+        const d = U.el('div', '', box);
+        d.style.color = '#777';
+        d.textContent = op === 'read' ? '选区内无读 IO' : '选区内无写 IO';
+        continue;
+      }
+      const denom = op === 'read' ? S.read : S.write;
+      const rows = items.map((it, i) => {
+        let upid = it.key, utid = null;
+        if (selKind === 'thr') {
+          utid = it.key;
+          const ti = D.tidOf.get(utid);
+          upid = ti != null ? D.threads.upid[ti] : -1;
+        }
+        const pi = procListIdx(upid);
+        return {
+          vals: {
+            rank: i + 1, name: it.name,
+            rate: fmtRateMBs(it.bytes, span), bytes: fmtB(it.bytes),
+            share: (denom > 0 ? it.bytes / denom * 100 : 0).toFixed(1) + '%',
+          },
+          onClick: pi >= 0 ? () => expandProcAndScroll(pi, utid) : null,
+        };
+      });
+      sTable(box, TOPN_COLS, rows, null);
+    }
   }
 
   function procName(D, upid) {
@@ -298,7 +390,7 @@ IOT.panels = (function () {
       }
       if (r.onClick) {
         tr2.classList.add('clk');
-        tr2.addEventListener('mousedown', r.onClick);
+        onTextClick(tr2, r.onClick);
       }
     }
     return tb;
@@ -350,7 +442,9 @@ IOT.panels = (function () {
     { k: 'read', label: '读', num: 1 },
     { k: 'write', label: '写', num: 1 },
     { k: 'other', label: '其他', num: 1 },
-    { k: 'rate', label: '速度', num: 1 },
+    { k: 'rrate', label: '读速度', num: 1 },
+    { k: 'wrate', label: '写速度', num: 1 },
+    { k: 'rate', label: '总速度', num: 1 },
     { k: 'share', label: '占比', num: 1 },
     { k: 'n', label: '请求数', num: 1 },
     { k: 'qAvg', label: '平均排队', num: 1 },
@@ -363,6 +457,8 @@ IOT.panels = (function () {
     return {
       name, total: fmtB(a.total), read: fmtB(a.read),
       write: fmtB(a.write), other: fmtB(a.other),
+      rrate: fmtRateMBs(a.read, span),
+      wrate: fmtRateMBs(a.write, span),
       rate: fmtRateMBs(a.total, span),
       share: (S.total ? a.total / S.total * 100 : 0).toFixed(1) + '%',
       n: a.n,
@@ -373,13 +469,17 @@ IOT.panels = (function () {
       d: a.d ? U.fmtNs(a.d) : '-',
     };
   }
-  // numeric sort keys must use raw values — carry them on the row
-  function ptRow(S, a, name, span, onClick) {
-    return { vals: ptVals(S, a, name, span), onClick,
-      raw: { total: a.total, read: a.read, write: a.write, other: a.other,
+  // numeric sort keys must use raw values — single source, attached both
+  // to the built row and (for sorting before row creation) to the agg
+  function ptRaw(a, span) {
+    return { total: a.total, read: a.read, write: a.write, other: a.other,
+             rrate: a.read / span, wrate: a.write / span,
              rate: a.total / span, share: a.total, n: a.n,
              qAvg: a.qN ? a.qSum / a.qN : -1, qMax: a.qMax,
-             sAvg: a.sN ? a.sSum / a.sN : -1, sMax: a.sMax, d: a.d } };
+             sAvg: a.sN ? a.sSum / a.sN : -1, sMax: a.sMax, d: a.d };
+  }
+  function ptRow(S, a, name, span, onClick) {
+    return { vals: ptVals(S, a, name, span), onClick, raw: ptRaw(a, span) };
   }
 
   const FILE_COLS = [
@@ -422,12 +522,7 @@ IOT.panels = (function () {
       const rows = [ptRow(S, S, '全部', span, null)];
       rows[0].head = true;
       const list = Object.values(src);
-      for (const a of list) {
-        a.raw = { total: a.total, read: a.read, write: a.write,
-                  other: a.other, rate: a.total / span, share: a.total,
-                  n: a.n, qAvg: a.qN ? a.qSum / a.qN : -1, qMax: a.qMax,
-                  sAvg: a.sN ? a.sSum / a.sN : -1, sMax: a.sMax, d: a.d };
-      }
+      for (const a of list) a.raw = ptRaw(a, span);
       list.sort((a, b) => {
         const x = a.raw[st.key], y = b.raw[st.key];
         const d = (typeof x === 'number' && typeof y === 'number')
@@ -685,6 +780,36 @@ IOT.panels = (function () {
   const CAT_NAME = ['sync_read', 'readahead', 'meta', 'write', 'flush',
                     'discard', 'other'];
 
+  // clicked a thread header row: whole-trace queue/service rollup
+  function threadDetail(host, utid) {
+    const D = IOT.data.D;
+    const ti = D.tidOf.get(utid);
+    const name = ti != null ?
+      `${D.strs[D.threads.name[ti]]} (${D.threads.tid[ti]}) · ` +
+      procName(D, D.threads.upid[ti]) : `utid ${utid}`;
+    const a = IOT.stats(0, D.dur, { inclLoop: D.inclLoop }).threads[utid]
+      || { n: 0, read: 0, write: 0, qSum: 0, qN: 0, qMax: -1,
+           sSum: 0, sN: 0, sMax: -1, d: 0 };
+    table(host, [
+      ['线程', name],
+      ['请求数', String(a.n)],
+      ['读', fmtB(a.read)],
+      ['写', fmtB(a.write)],
+      ['排队（≈Runnable）',
+        `累计 ${a.qN ? U.fmtNs(a.qSum) : '-'}` +
+        ` · 平均 ${a.qN ? U.fmtNs(a.qSum / a.qN) : '-'}` +
+        ` · 最大 ${a.qMax >= 0 ? U.fmtNs(a.qMax) : '-'}`],
+      ['服务（≈Running）',
+        `累计 ${a.sN ? U.fmtNs(a.sSum) : '-'}` +
+        ` · 平均 ${a.sN ? U.fmtNs(a.sSum / a.sN) : '-'}` +
+        ` · 最大 ${a.sMax >= 0 ? U.fmtNs(a.sMax) : '-'}`],
+      ['D 状态时长', a.d ? U.fmtNs(a.d) : '-'],
+    ]);
+    const note = U.el('div', 'winnote', host);
+    note.textContent = '统计全 trace；累计为各请求之和，请求可并发，' +
+      '累计值可能超过墙钟时间';
+  }
+
   function renderSelection(host) {
     const s = IOT.state;
     if (s.area) { areaDetail(host, s.area); return; }
@@ -706,6 +831,12 @@ IOT.panels = (function () {
         table(host, [['分组', g ? g.label : s.sel.type]]);
         break;
       }
+      case 'row':
+        if (s.sel.row && s.sel.row.type === 'thead')
+          threadDetail(host, s.sel.row.utid);
+        else
+          table(host, [['类型', s.sel.type]]);
+        break;
       default:
         table(host, [['类型', s.sel.type]]);
     }
@@ -722,16 +853,17 @@ IOT.panels = (function () {
     ['Shift + 拖动', '平移'],
     ['F', '缩放到当前选中条目或区域'],
     ['Esc', '取消选择 / 关闭帮助'],
-    ['Ctrl + A', '选中整个 trace'],
+    ['Ctrl + A', '选中整个 trace；在面板内按下 = 全选面板文字'],
     ['R', '把选中条目转成区域选择'],
     ['M / Shift+M', '临时标记 / 持久标记当前时间范围'],
     ['[ / ]', '跳到同一行上一条 / 下一条目'],
     ['/', '聚焦搜索框'],
     ['C', '切换配色：类别 / 优先级 / 进程 / 延迟'],
     ['?', '显示 / 隐藏本帮助'],
+    ['Q', '收起 / 展开底部面板'],
     ['点击组标题', '展开 / 折叠轨道组（设备组内的「调度队列」子组单独开关）'],
     ['慢 IO 输入框', '标题栏慢 IO 阈值（ms），影响红色描边和慢 IO Tab'],
-    ['分段含义', '实色 = 设备服务，浅色细条 = 调度排队，斜线 = requeue 等待'],
+    ['分段含义', '实色=设备服务(≈Running) · 浅色细条=调度排队(≈Runnable) · 斜线=requeue 等待'],
   ];
   function toggleHelp(force) {
     const ov = document.getElementById('helpov');
@@ -761,7 +893,14 @@ IOT.panels = (function () {
     document.getElementById('helpov').addEventListener('mousedown', e => {
       if (e.target.id === 'helpov') toggleHelp(false);
     });
+    // capture the selection before the press's default action can change
+    // it (capture runs first); onTextClick compares against this
+    window.addEventListener('mousedown', () => {
+      const s = getSelection();
+      selAtDown = s && !s.isCollapsed ? s.toString() : '';
+    }, true);
   }
 
-  return { init, registerTab, activate, showSelection, toggleHelp };
+  return { init, registerTab, activate, showSelection, toggleHelp,
+           togglePanel };
 })();

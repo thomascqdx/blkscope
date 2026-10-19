@@ -85,13 +85,15 @@ body {
 
 #split { flex: none; height: 4px; background: #111; cursor: row-resize; }
 #panel { flex: none; display: flex; flex-direction: column; background: #242424; height: 28vh; min-height: 120px; }
+#panel.collapsed { height: auto !important; min-height: 0; }
+#panel.collapsed #panelbody { display: none; }
 #tabs { flex: none; display: flex; border-bottom: 1px solid #151515; }
 #tabs .tab {
   padding: 4px 14px; cursor: pointer; color: #999; font-size: 11px;
-  border-right: 1px solid #151515;
+  border-right: 1px solid #151515; user-select: none;
 }
 #tabs .tab.active { color: #fff; background: #1e1e1e; }
-#panelbody { flex: 1; overflow: auto; padding: 6px 10px; }
+#panelbody { flex: 1; overflow: auto; padding: 6px 10px; user-select: text; }
 #panelbody table { border-collapse: collapse; }
 #panelbody td { padding: 1px 10px 1px 0; vertical-align: top; color: #ccc; }
 #panelbody td.k { color: #888; white-space: nowrap; }
@@ -102,8 +104,15 @@ body {
 #panelbody .subtab {
   padding: 2px 10px; cursor: pointer; color: #999; font-size: 11px;
   background: #1b1b1b; border-radius: 3px; border: 1px solid #333;
+  user-select: none;
 }
 #panelbody .subtab.active { color: #fff; background: #333; }
+#panelbody .subsel .subgap { width: 14px; }
+#panelbody .topwrap { display: flex; gap: 28px; flex-wrap: wrap; }
+#panelbody .topname {
+  color: #ccc; font-weight: 600; font-size: 11px; margin-bottom: 2px;
+  user-select: none;
+}
 #panelbody table.stab { font-size: 11px; }
 #panelbody table.stab th {
   padding: 1px 12px 1px 0; text-align: left; color: #8ab4f8;

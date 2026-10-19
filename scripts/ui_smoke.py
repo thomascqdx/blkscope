@@ -45,6 +45,8 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
     n = 0
     pb: dict[str, float] = {}
     fr: dict[str, float] = {}
+    prw: dict[str, list] = {}   # upid -> [read, write] prorated bytes
+    trw: dict[str, list] = {}   # utid -> [read, write] prorated bytes
     for i in range(len(R["dev"])):
         s = R["t_iss"][i]
         if s < 0:
@@ -82,11 +84,20 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
             ot += b
         upid = upid_of.get(R["utid"][i], -1)
         pb[upid] = pb.get(upid, 0.0) + b
+        pr = prw.setdefault(upid, [0.0, 0.0])
+        tr = trw.setdefault(R["utid"][i], [0.0, 0.0])
+        if op == 1:
+            pr[0] += b
+            tr[0] += b
+        elif op == 2:
+            pr[1] += b
+            tr[1] += b
         fi = R["file"][i]
         if R["fsrc"][i] > 0 and fi >= 0:
             fr[fi] = fr.get(fi, 0.0) + b
     return {"n": n, "total": tot, "read": rd, "write": wr, "other": ot,
-            "procs": pb, "files": fr, "pname": pname}
+            "procs": pb, "files": fr, "pname": pname,
+            "procs_rw": prw, "thrs_rw": trw}
 
 
 def py_main_thread_dtime(P: dict, top_name: str, w0: float, w1: float):
@@ -401,6 +412,129 @@ def main() -> int:
         click_tab("关键线程阻塞")
         shot("21_keythreads")
         page.evaluate("""document.getElementById('panelbody').scrollTop = 0""")
+
+        # ---- panel text selection + Top N + Q drawer + thead click --------
+        # text selection: in 区域统计 thread view a horizontal drag across a
+        # row selects text and must NOT navigate; a plain click does
+        click_tab("区域统计")
+        click_sub("线程")
+        page.evaluate("""for (const g of IOT.tracks.T.groups)
+          if (g.kind === 'proc') IOT.tracks.setExpanded(g.id, false);""")
+        page.wait_for_timeout(100)
+
+        def snap():
+            return page.evaluate("""(() => ({
+              top: document.getElementById('scroll').scrollTop,
+              exp: IOT.tracks.T.groups.filter(g => g.expanded)
+                     .map(g => g.id).sort() }))()""")
+
+        us = page.evaluate(
+            "getComputedStyle(document.querySelector("
+            "'#panelbody table.stab td')).userSelect")
+        log("panelbody td user-select:", us)
+        assert us == "text", f"panel text not selectable: {us}"
+        cell = page.evaluate("""(() => {
+          const td = document.querySelector(
+            '#panelbody table.stab tr.clk td');
+          if (!td) return null;
+          const r = td.getBoundingClientRect();
+          return { x: r.left + 2, y: r.top + r.height / 2,
+                   x2: r.right + 40 }; })()""")  # into the next cell
+        assert cell, "no clickable row in 线程 view"
+        s0 = snap()
+        page.mouse.move(cell["x"], cell["y"])
+        page.mouse.down()
+        page.mouse.move(cell["x2"], cell["y"], steps=6)
+        page.mouse.up()
+        page.wait_for_timeout(120)
+        stext = page.evaluate("window.getSelection().toString()")
+        s1 = snap()
+        log("panel text selection:", (stext or "").strip()[:60])
+        assert stext and stext.strip(), "drag did not select panel text"
+        assert s1 == s0, f"text drag navigated: {s0} -> {s1}"
+        shot("21a_text_select")
+        page.mouse.click(cell["x"], cell["y"])
+        page.wait_for_timeout(150)
+        s2 = snap()
+        assert s2 != s1, "plain click on table row did not navigate"
+
+        # 当前选择 area summary: stats key/value table + two Top N tables
+        click_tab("当前选择")
+        txt = page.evaluate("document.getElementById('panelbody').innerText")
+        for kw in ("读速度", "写速度", "总速度", "读速度 Top", "写速度 Top"):
+            assert kw in txt, f"area summary missing {kw!r}"
+        nreq = page.evaluate("""(() => {
+          for (const tr of document.querySelectorAll('#panelbody table tr')){
+            const k = tr.querySelector('td.k');
+            if (k && k.textContent.trim() === '请求数')
+              return parseInt(tr.children[1].textContent, 10);
+          }
+          return -1; })()""")
+        jsn = page.evaluate("IOT.stats(5e9, 8e9, {inclLoop:false}).n")
+        log("area summary 请求数:", nreq, "| IOT.stats n:", jsn)
+        assert nreq == jsn, "area summary 请求数 != IOT.stats().n"
+        shot("21b_sel_area_topn")
+
+        # Ctrl+A after a mousedown inside the panel selects the panel text
+        # and must not touch the trace area selection
+        page.locator("#panelbody .winnote").first.click()
+        page.keyboard.down("Control")
+        page.keyboard.press("a")
+        page.keyboard.up("Control")
+        page.wait_for_timeout(80)
+        atxt = page.evaluate("window.getSelection().toString()")
+        assert atxt and "请求数" in atxt, \
+            f"Ctrl+A in panel selected: {str(atxt)[:80]!r}"
+        assert page.evaluate("IOT.state.area.t0") == 5e9, \
+            "Ctrl+A inside the panel changed the trace area"
+
+        # Q collapses the panel to its tab bar; canvas grows; Q restores
+        h0 = page.evaluate("document.getElementById('canvas').clientHeight")
+        page.keyboard.press("q")
+        page.wait_for_timeout(150)
+        st = page.evaluate("""(() => ({
+          col: document.getElementById('panel')
+                 .classList.contains('collapsed'),
+          pbH: document.getElementById('panelbody').offsetHeight,
+          cvH: document.getElementById('canvas').clientHeight }))()""")
+        log("after Q:", st, "| canvas was", h0)
+        assert st["col"] and st["pbH"] == 0 and st["cvH"] > h0, st
+        shot("21c_panel_collapsed")
+        page.keyboard.press("q")
+        page.wait_for_timeout(150)
+        st = page.evaluate("""(() => ({
+          col: document.getElementById('panel')
+                 .classList.contains('collapsed'),
+          cvH: document.getElementById('canvas').clientHeight }))()""")
+        assert not st["col"] and abs(st["cvH"] - h0) < 2, st
+        shot("21d_panel_expanded")
+
+        # click a thread header row -> per-thread queue/service rollup
+        th = page.evaluate("""(() => {
+          const g = IOT.tracks.T.groups.find(g => g.kind === 'proc');
+          IOT.tracks.setExpanded(g.id, true);
+          const row = IOT.tracks.T.rows.find(r => r.type === 'thead');
+          if (!row) return null;
+          const scroll = document.getElementById('scroll');
+          scroll.scrollTop = Math.max(0, row.y0 - 160);
+          IOT.state.scrollTop = scroll.scrollTop;
+          IOT.render.renderAll();
+          const rc = document.getElementById('canvas')
+                       .getBoundingClientRect();
+          return { x: rc.left + rc.width * .5,
+                   y: rc.top + row.y0 + row.h / 2 - scroll.scrollTop };
+        })()""")
+        assert th, "no thead row found"
+        page.mouse.click(th["x"], th["y"])
+        page.wait_for_timeout(150)
+        st = page.evaluate("""(() => ({
+          ty: IOT.state.sel && IOT.state.sel.type,
+          rt: IOT.state.sel && IOT.state.sel.row &&
+              IOT.state.sel.row.type,
+          txt: document.getElementById('panelbody').innerText }))()""")
+        assert st["ty"] == "row" and st["rt"] == "thead", st
+        assert "排队（≈Runnable）" in st["txt"], "thread rollup missing"
+        shot("21e_thread_head")
 
         # ---- flow arrows --------------------------------------------------
         # collapse 概览 + all proc groups; expand the target app's proc
@@ -717,6 +851,47 @@ def main() -> int:
                 if utid is not None and not close(pd, jd):
                     mismatches.append(
                         f"{wname} dtime {utid}: js={jd} py={pd}")
+            # Top-N rankings (当前选择 area summary) vs Python
+            if wname == "[5s,8s]":
+                tn = page.evaluate(f"""(() => {{
+                  const S = IOT.stats({w0}, {w1}, {{inclLoop:false}});
+                  return {{ read: S.read, write: S.write,
+                    pr: IOT.statsMod.topN(S, 'proc', 'read', 10),
+                    pw: IOT.statsMod.topN(S, 'proc', 'write', 10),
+                    tr: IOT.statsMod.topN(S, 'thr', 'read', 10) }}; }})()""")
+                if not (close(tn["read"], py["read"])
+                        and close(tn["write"], py["write"])):
+                    mismatches.append(
+                        f"{wname} S.read/write: js "
+                        f"{tn['read']}/{tn['write']} vs py "
+                        f"{py['read']}/{py['write']}")
+
+                def py_top(d, i):
+                    # same order as JS topN: bytes desc, key asc on ties
+                    return [(k, v[i]) for k, v in sorted(
+                            (kv for kv in d.items() if kv[1][i] > 0),
+                            key=lambda x: (-x[1][i], x[0]))][:10]
+
+                for label, plist, jlist in (
+                    ("proc.read", py_top(py["procs_rw"], 0), tn["pr"]),
+                    ("proc.write", py_top(py["procs_rw"], 1), tn["pw"]),
+                    ("thr.read", py_top(py["thrs_rw"], 0), tn["tr"]),
+                ):
+                    log(f"  topN {label} py: "
+                        f"{[(k, round(v)) for k, v in plist[:5]]}")
+                    log(f"             js: "
+                        f"{[(j['key'], round(j['bytes']))
+                            for j in jlist[:5]]}")
+                    if len(plist) != len(jlist):
+                        mismatches.append(
+                            f"{wname} topN {label} len: "
+                            f"js={len(jlist)} py={len(plist)}")
+                        continue
+                    for (pk, pv), j in zip(plist, jlist):
+                        if j["key"] != pk or not close(pv, j["bytes"]):
+                            mismatches.append(
+                                f"{wname} topN {label}: py {pk}/{pv:.0f}"
+                                f" != js {j['key']}/{j['bytes']:.0f}")
         assert not mismatches, "stats cross-check failed: " + \
             "; ".join(mismatches)
         log("stats cross-check: OK")

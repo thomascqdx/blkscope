@@ -225,6 +225,31 @@ IOT.statsMod = (function () {
              keyThreads: s.keyThreads };
   }
 
+  // read/write speed ranking for the 当前选择 area summary:
+  // kind 'proc'|'thr', op 'read'|'write'; up to n entities with prorated
+  // bytes > 0 for that op, sorted by bytes desc (rate = bytes/span, B/ns;
+  // share = fraction of S[op])
+  function topN(S, kind, op, n) {
+    const span = Math.max(1, S.w1 - S.w0);
+    const denom = op === 'read' ? S.read : S.write;
+    const src = kind === 'proc' ? S.procs : S.threads;
+    const out = [];
+    for (const k in src) {
+      const a = src[k];
+      const bytes = a[op];
+      if (!(bytes > 0)) continue;
+      out.push({
+        key: kind === 'proc' ? a.upid : a.utid,
+        name: kind === 'proc' ? a.name
+          : `${a.name} (${a.tid}) · ${a.pname}`,
+        bytes, rate: bytes / span,
+        share: denom > 0 ? bytes / denom : 0,
+      });
+    }
+    out.sort((x, y) => y.bytes - x.bytes || x.key - y.key);
+    return out.slice(0, n);
+  }
+
   // reverse index: req id -> [dst ids] that waited on it (built once)
   function buildReverse() {
     const D = IOT.data.D;
@@ -239,7 +264,7 @@ IOT.statsMod = (function () {
     }
   }
 
-  return { stats, statsJson, buildReverse };
+  return { stats, statsJson, buildReverse, topN };
 })();
 
 IOT.stats = IOT.statsMod.stats;
