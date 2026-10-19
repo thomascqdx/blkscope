@@ -14,9 +14,9 @@ import time
 
 
 def render_html(payload_b64: str, name: str) -> str:
-    """Stage 2 hook: inline web/ assets + payload into a single HTML file."""
-    raise NotImplementedError(
-        "HTML 输出将在下一阶段实现（web/ 内联 + payload 嵌入）")
+    """Inline web/ assets + payload into a single HTML file (design 5.1)."""
+    from .html import render_html as _render
+    return _render(payload_b64, name)
 
 
 def _process(name: str, path: str, outdir: str, write_json: bool) -> int:

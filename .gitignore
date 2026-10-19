@@ -17,3 +17,6 @@ samples/
 
 # trace_processor binary (fetched by scripts/fetch_tp.py)
 tools/trace_processor_shell*
+
+# review scratch
+review_tmp/

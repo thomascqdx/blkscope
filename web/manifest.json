@@ -1,0 +1,13 @@
+{
+  "css": ["css/app.css"],
+  "js": [
+    "js/util.js",
+    "js/data.js",
+    "js/timescale.js",
+    "js/tracks.js",
+    "js/render.js",
+    "js/input.js",
+    "js/panels.js",
+    "js/app.js"
+  ]
+}
