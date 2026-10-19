@@ -859,6 +859,8 @@ IOT.panels = (function () {
     ['[ / ]', '跳到同一行上一条 / 下一条目'],
     ['/', '聚焦搜索框'],
     ['C', '切换配色：类别 / 优先级 / 进程 / 延迟'],
+    ['L', '颜色图例（也可点击标题栏「配色: …」或「图例」按钮）'],
+    ['手册按钮', '打开内嵌完整使用手册'],
     ['?', '显示 / 隐藏本帮助'],
     ['Q', '收起 / 展开底部面板'],
     ['点击组标题', '展开 / 折叠轨道组（设备组内的「调度队列」子组单独开关）'],
@@ -868,6 +870,11 @@ IOT.panels = (function () {
   function toggleHelp(force) {
     const ov = document.getElementById('helpov');
     const open = force !== undefined ? force : !ov.classList.contains('open');
+    if (open) {
+      // overlays are mutually exclusive (design 5.6)
+      if (IOT.legend && IOT.legend.toggle) IOT.legend.toggle(false);
+      if (IOT.manual && IOT.manual.toggle) IOT.manual.toggle(false);
+    }
     if (open && !ov.childElementCount) {
       const card = U.el('div', 'card', ov);
       U.el('h3', '', card).textContent = '快捷键';
@@ -877,6 +884,12 @@ IOT.panels = (function () {
         U.el('td', 'k', tr).textContent = k;
         U.el('td', '', tr).textContent = d;
       }
+      const link = U.el('div', 'mlink', card);
+      link.textContent = '打开完整使用手册';
+      link.addEventListener('click', () => {
+        toggleHelp(false);
+        if (IOT.manual) IOT.manual.toggle(true);
+      });
     }
     ov.classList.toggle('open', open);
   }

@@ -14,9 +14,11 @@
     <span class="spacer"></span>
     <label id="looplbl"><input type="checkbox" id="loopchk"> 含 loop 设备</label>
     <label id="slowlbl">慢 IO ≥ <input type="number" id="slowms" value="10" min="0" step="1"> ms</label>
-    <span id="cmode">配色: 类别</span>
+    <span id="cmode" title="点击查看图例 (L)">配色: 类别</span>
     <span id="segnote" title="请求生命周期分段">实色=设备服务(≈Running) · 浅色细条=调度排队(≈Runnable) · 斜线=requeue 等待</span>
     <input id="search" type="text" placeholder="搜索 (/)" autocomplete="off" spellcheck="false">
+    <button id="manualbtn" title="使用手册">手册</button>
+    <button id="legendbtn" title="颜色图例 (L)">图例</button>
     <button id="helpbtn" title="快捷键 (?)">?</button>
   </header>
   <div id="quality"></div>
@@ -33,6 +35,8 @@
   </div>
   <div id="tooltip"></div>
   <div id="helpov"></div>
+  <div id="legendov"></div>
+  <div id="manualov"><div class="card"><nav id="manualtoc"></nav><article id="manualbody"><!--__MANUAL__--></article></div></div>
 </div>
 <script type="application/octet-stream" id="payload">__PAYLOAD__</script>
 <script>/*__JS__*/</script>

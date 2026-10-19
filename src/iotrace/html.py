@@ -1,8 +1,11 @@
-"""Single-file HTML builder (design 5.1).
+"""Single-file HTML builder (design 5.1 / 5.6).
 
 web/index.html is the template; placeholders __TITLE__, /*__CSS__*/,
-/*__JS__*/, __PAYLOAD__ are replaced with the escaped trace name, the
-manifest-ordered CSS/JS inline contents and the base64+gzip payload.
+/*__JS__*/, __PAYLOAD__ and <!--__MANUAL__--> are replaced with the escaped
+trace name, the manifest-ordered CSS/JS inline contents, the base64+gzip
+payload and the rendered user manual. The manual comes from the manifest's
+optional "manual" entry (a Markdown file converted by mdlite) and is
+substituted LAST so literal placeholder text inside the manual survives.
 web/ lookup order: IOTRACE_WEB env > sys._MEIPASS (PyInstaller) > repo root.
 """
 
@@ -50,8 +53,18 @@ def render_html(payload_b64: str, name: str) -> str:
     js = concat(manifest.get("js", []),
                 lambda s: s.replace("</script", "<\\/script"))
 
+    manual = ""
+    mrel = manifest.get("manual")
+    if mrel:
+        from .mdlite import md_to_html
+        with open(os.path.join(wdir, mrel), encoding="utf-8") as f:
+            manual = md_to_html(f.read())
+
+    # __MANUAL__ is replaced last: literal placeholder-looking text inside
+    # the manual must survive verbatim (design 5.6)
     return (tpl
             .replace("__TITLE__", _html.escape(name, quote=True))
             .replace("/*__CSS__*/", css)
             .replace("/*__JS__*/", js)
-            .replace("__PAYLOAD__", payload_b64))
+            .replace("__PAYLOAD__", payload_b64)
+            .replace("<!--__MANUAL__-->", manual))

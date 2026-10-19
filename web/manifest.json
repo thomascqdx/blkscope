@@ -1,5 +1,6 @@
 {
   "css": ["css/app.css"],
+  "manual": "manual.md",
   "js": [
     "js/util.js",
     "js/data.js",
@@ -8,6 +9,8 @@
     "js/tracks.js",
     "js/render.js",
     "js/flows.js",
+    "js/legend.js",
+    "js/manual.js",
     "js/input.js",
     "js/panels.js",
     "js/app.js"

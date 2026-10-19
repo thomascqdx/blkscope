@@ -75,6 +75,19 @@ IOT.input = (function () {
     });
     document.getElementById('helpbtn').addEventListener('click',
       () => IOT.panels.toggleHelp());
+    document.getElementById('legendbtn').addEventListener('click',
+      () => IOT.legend.toggle());
+    document.getElementById('manualbtn').addEventListener('click',
+      () => IOT.manual.toggle());
+    document.getElementById('cmode').addEventListener('click',
+      () => IOT.legend.toggle());
+    // backdrop click closes the modal overlays (same as help)
+    document.getElementById('legendov').addEventListener('mousedown', e => {
+      if (e.target.id === 'legendov') IOT.legend.toggle(false);
+    });
+    document.getElementById('manualov').addEventListener('mousedown', e => {
+      if (e.target.id === 'manualov') IOT.manual.toggle(false);
+    });
     window.addEventListener('resize', requestRender);
   }
 
@@ -416,13 +429,35 @@ IOT.input = (function () {
                  t.isContentEditable);
   }
 
+  // which modal overlay is open (they are mutually exclusive)
+  function openOverlay() {
+    if (document.getElementById('helpov').classList.contains('open'))
+      return 'help';
+    if (document.getElementById('legendov').classList.contains('open'))
+      return 'legend';
+    if (document.getElementById('manualov').classList.contains('open'))
+      return 'manual';
+    return null;
+  }
+  function closeOverlay(name) {
+    if (name === 'help') IOT.panels.toggleHelp(false);
+    else if (name === 'legend' && IOT.legend) IOT.legend.toggle(false);
+    else if (name === 'manual' && IOT.manual) IOT.manual.toggle(false);
+  }
+
   function onKeyDown(e) {
     if (editable(e)) return;
+    const ov = openOverlay();
     // ctrl/meta combos first — they must not fall into the WASD
     // hold-key switch below (Ctrl+A would pan left otherwise)
     if (e.ctrlKey || e.metaKey) {
       if (e.code === 'KeyA') {
-        if (mouseInPanel) {                  // select all panel text
+        if (ov === 'manual') {               // select all manual text
+          const r = document.createRange();
+          r.selectNodeContents(document.getElementById('manualbody'));
+          const s = getSelection();
+          s.removeAllRanges(); s.addRange(r);
+        } else if (mouseInPanel) {           // select all panel text
           const r = document.createRange();
           r.selectNodeContents(document.getElementById('panelbody'));
           const s = getSelection();
@@ -434,6 +469,26 @@ IOT.input = (function () {
           requestRender();
         }
         e.preventDefault();
+      }
+      return;
+    }
+    // while an overlay is open only Esc / ? / L are handled;
+    // every other single-key shortcut is ignored (design 5.6).
+    // exception: C stays live inside the legend so its 「当前」tag
+    // can follow the mode change (legend.refresh via paint.cycle).
+    if (ov) {
+      switch (e.code) {
+        case 'Escape': closeOverlay(ov); break;
+        case 'KeyL': if (IOT.legend) IOT.legend.toggle(); break;
+        case 'KeyC':
+          if (ov === 'legend') { IOT.paint.cycle(); requestRender(); }
+          break;
+        case 'Slash':
+          if (e.shiftKey || e.key === '?') IOT.panels.toggleHelp();
+          break;
+        default:
+          if (e.key === '?') IOT.panels.toggleHelp();
+          break;
       }
       return;
     }
@@ -454,10 +509,8 @@ IOT.input = (function () {
         requestRender(); break;
       }
       case 'Escape':
-        if (document.getElementById('helpov').classList.contains('open')) {
-          IOT.panels.toggleHelp(false);
-        } else if (document.activeElement &&
-                   document.activeElement.id === 'search') {
+        if (document.activeElement &&
+            document.activeElement.id === 'search') {
           document.activeElement.blur();
         } else {
           IOT.state.sel = null; IOT.state.area = null;
@@ -496,6 +549,9 @@ IOT.input = (function () {
       case 'KeyC':
         IOT.paint.cycle();
         requestRender(); break;
+      case 'KeyL':
+        if (IOT.legend) IOT.legend.toggle();
+        break;
       case 'Slash':
         // '?' is Shift+/ on US layouts (and dispatched key may be '/')
         if (e.shiftKey || e.key === '?') {

@@ -10,6 +10,23 @@ IOT.render = (function () {
   const D_COLOR = '#e8763a', D_IOWAIT = '#c0392b';
   const CTR_COLORS = { read: '#4e79a7', write: '#f28e2b', iops: '#8fbf6f',
                        ind: '#e8763a', qdep: '#c66db3' };
+  // single colour source for painting AND the legend overlay (design 5.6);
+  // heat* entries are 'r,g,b' triples used with rgba(<c>,<alpha>)
+  const PAL = {
+    cat: CAT_COLORS,
+    prio: { rt: '#e02b2b', ux: '#e84fd8', fg: '#f4cf3f', sync: '#4e79a7',
+            idle: '#4a4f57', async: '#9e9e9e' },
+    ctr: CTR_COLORS,
+    d: D_COLOR, dIow: D_IOWAIT,
+    slow: '#ff3b30', sel: '#6db3f2', fua: '#fff', limit: '#e05a5a',
+    flow: '#f4cf3f', markPersist: '#f4cf3f', markTemp: '#7ec8f0',
+    heatDev: '232,118,58', heatQueue: '150,170,255',
+    heatProc: '109,179,242',
+  };
+  const rgba = (base, a) => `rgba(${base},${a})`;
+  const hxRgb = (hex, a) =>       // '#rrggbb' + alpha -> rgba() string
+    `rgba(${parseInt(hex.slice(1, 3), 16)},` +
+    `${parseInt(hex.slice(3, 5), 16)},${parseInt(hex.slice(5, 7), 16)},${a})`;
   let hatch = null;
 
   function ctx2d(cv) {
@@ -35,6 +52,7 @@ IOT.render = (function () {
     IOT.paint.mode = MODE_ORDER[(i + 1) % MODE_ORDER.length];
     const el = document.getElementById('cmode');
     if (el) el.textContent = '配色: ' + MODE_LABEL[IOT.paint.mode];
+    if (IOT.legend && IOT.legend.refresh) IOT.legend.refresh();
   };
 
   function procColor(i) {
@@ -43,11 +61,14 @@ IOT.render = (function () {
     const upid = ti != null ? D.threads.upid[ti] : -1;
     return `hsl(${U.hashHue(String(upid))}, 45%, 45%)`;
   }
+  // log scale 0.1ms (green) -> 20ms (red); shared with the legend gradient
+  function latColorNs(ns) {
+    const f = U.clamp((Math.log10(Math.max(1, ns)) - 5) / 2.3, 0, 1);
+    return `hsl(${Math.round(120 * (1 - f))}, 75%, 45%)`;
+  }
   function latColor(i) {
     const D = IOT.data.D;
-    const t = D.svcEnd[i] - D.tSub[i];
-    const f = U.clamp((Math.log10(Math.max(1, t)) - 5) / 2.3, 0, 1);
-    return `hsl(${Math.round(120 * (1 - f))}, 75%, 45%)`;
+    return latColorNs(D.svcEnd[i] - D.tSub[i]);
   }
 
   function rectColor(i) {
@@ -55,17 +76,17 @@ IOT.render = (function () {
     switch (IOT.paint.mode) {
       case 'prio': {
         const p = R.prio[i];
-        if (p & 1) return '#e02b2b';         // RT red
-        if (p & 4) return '#e84fd8';         // UX magenta
-        if (p & 8) return '#f4cf3f';         // FG_META yellow
-        if (p & 16) return '#4e79a7';        // SYNC blue
-        if (p & 2) return '#4a4f57';         // IDLE dark gray
-        return '#9e9e9e';                    // other async gray
+        if (p & 1) return PAL.prio.rt;       // RT red
+        if (p & 4) return PAL.prio.ux;       // UX magenta
+        if (p & 8) return PAL.prio.fg;       // FG_META yellow
+        if (p & 16) return PAL.prio.sync;    // SYNC blue
+        if (p & 2) return PAL.prio.idle;     // IDLE dark gray
+        return PAL.prio.async;               // other async gray
       }
       case 'proc': return procColor(i);
       case 'lat': return latColor(i);
       default:
-        return CAT_COLORS[R.cat[i]] || '#9e9e9e';
+        return PAL.cat[R.cat[i]] || PAL.prio.async;
     }
   }
 
@@ -79,21 +100,21 @@ IOT.render = (function () {
     if (w >= 4) {
       const prio = R.prio[i];
       if (prio & 1) {                        // RT: 2px red top bar
-        c.fillStyle = '#e02b2b';
+        c.fillStyle = PAL.prio.rt;
         c.fillRect(x0, y + 1, Math.max(1, w), 2);
       }
       if (prio & 4) {                        // UX: magenta tri top-left
-        c.fillStyle = '#e84fd8';
+        c.fillStyle = PAL.prio.ux;
         c.beginPath(); c.moveTo(x0, y + 1); c.lineTo(x0 + 6, y + 1);
         c.lineTo(x0, y + 7); c.fill();
       }
       if (prio & 8) {                        // FG_META: yellow tri top-right
-        c.fillStyle = '#f4cf3f';
+        c.fillStyle = PAL.prio.fg;
         c.beginPath(); c.moveTo(x1, y + 1); c.lineTo(x1 - 6, y + 1);
         c.lineTo(x1, y + 7); c.fill();
       }
       if (prio & 64) {                       // FUA: small marker bottom-right
-        c.fillStyle = '#fff';
+        c.fillStyle = PAL.fua;
         c.fillRect(x1 - 3, y + h - 4, 3, 2);
       }
       if (R.t_cmp[i] < 0) {                  // incomplete: hatch
@@ -110,7 +131,7 @@ IOT.render = (function () {
         c.restore();
       }
       if (slow) {                            // slow IO: red outline
-        c.strokeStyle = '#ff3b30'; c.lineWidth = 1;
+        c.strokeStyle = PAL.slow; c.lineWidth = 1;
         c.strokeRect(x0 + .5, y + 1.5, Math.max(1, w) - 1, h - 3);
       }
       if (w > 30 && clipLabel !== false) {
@@ -123,7 +144,7 @@ IOT.render = (function () {
     }
     const s = IOT.state && IOT.state.sel;
     if (s && s.type === 'req' && s.id === i) {
-      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeStyle = PAL.sel; c.lineWidth = 1.5;
       c.strokeRect(x0 - .5, y + .5, Math.max(2, w) + 1, h - 1);
     }
   }
@@ -160,31 +181,31 @@ IOT.render = (function () {
     if (w >= 4) {
       const prio = R.prio[i];
       if (prio & 1) {
-        c.fillStyle = '#e02b2b';
+        c.fillStyle = PAL.prio.rt;
         c.fillRect(xA, y + 1, Math.max(1, w), 2);
       }
       if (prio & 4) {
-        c.fillStyle = '#e84fd8';
+        c.fillStyle = PAL.prio.ux;
         c.beginPath(); c.moveTo(xA, y + 1); c.lineTo(xA + 6, y + 1);
         c.lineTo(xA, y + 7); c.fill();
       }
       if (prio & 8) {
-        c.fillStyle = '#f4cf3f';
+        c.fillStyle = PAL.prio.fg;
         c.beginPath(); c.moveTo(xB, y + 1); c.lineTo(xB - 6, y + 1);
         c.lineTo(xB, y + 7); c.fill();
       }
       if (prio & 64) {
-        c.fillStyle = '#fff';
+        c.fillStyle = PAL.fua;
         c.fillRect(xB - 3, y + h - 4, 3, 2);
       }
     }
     if (slow) {
-      c.strokeStyle = '#ff3b30'; c.lineWidth = 1;
+      c.strokeStyle = PAL.slow; c.lineWidth = 1;
       c.strokeRect(xA + .5, y + 1.5, Math.max(1, w) - 1, h - 3);
     }
     const s = IOT.state && IOT.state.sel;
     if (s && s.type === 'req' && s.id === i) {
-      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeStyle = PAL.sel; c.lineWidth = 1.5;
       c.strokeRect(xA - .5, y + .5, Math.max(2, w) + 1, h - 1);
     }
   }
@@ -253,7 +274,7 @@ IOT.render = (function () {
     const s = IOT.state && IOT.state.sel;
     if (s && s.type === 'req' && s.id === i) {
       const xA = TS.tToPx(qStartOf(i)), xB = TS.tToPx(R.t_iss[i]);
-      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeStyle = PAL.sel; c.lineWidth = 1.5;
       c.strokeRect(xA - .5, y + .5, Math.max(2, xB - xA) + 1, h - 1);
     }
   }
@@ -363,7 +384,7 @@ IOT.render = (function () {
           const a = D.dst.ts[i], b = a + D.dst.dur[i];
           const x0 = TS.tToPx(a), x1 = TS.tToPx(b);
           const rw = Math.max(1, x1 - x0);
-          c.fillStyle = D.dst.iow[i] === 1 ? D_IOWAIT : D_COLOR;
+          c.fillStyle = D.dst.iow[i] === 1 ? PAL.dIow : PAL.d;
           c.fillRect(x0, y + 1, rw, r.h - 2);
           if (rw > 30) {
             c.save(); c.beginPath(); c.rect(x0, y, rw, r.h); c.clip();
@@ -416,10 +437,10 @@ IOT.render = (function () {
     if (r.type === 'lane') {
       const d = IOT.data.D.devs[r.di];
       if (d.slot_limit != null && r.slot === d.slot_limit) {
-        c.strokeStyle = 'rgba(232,118,58,.8)'; c.setLineDash([4, 3]);
+        c.strokeStyle = rgba(PAL.heatDev, .8); c.setLineDash([4, 3]);
         c.beginPath(); c.moveTo(0, y + .5); c.lineTo(w, y + .5); c.stroke();
         c.setLineDash([]);
-        c.fillStyle = '#e8763a'; c.font = '10px sans-serif';
+        c.fillStyle = rgba(PAL.heatDev, 1); c.font = '10px sans-serif';
         c.fillText('设备上限 ' + d.slot_limit, w - 70, y + 11);
       }
     }
@@ -428,7 +449,7 @@ IOT.render = (function () {
   function markSel(c, sel, id, x0, w, y, h) {
     const s = IOT.state.sel;
     if (s && s.type === sel.type && s.id === id) {
-      c.strokeStyle = '#6db3f2'; c.lineWidth = 1.5;
+      c.strokeStyle = PAL.sel; c.lineWidth = 1.5;
       c.strokeRect(x0, y + .5, w, h - 1);
     }
   }
@@ -460,7 +481,7 @@ IOT.render = (function () {
     for (let i = i0; i <= i1; i++) if (arr[i] > mx) mx = arr[i];
     const mxRate = isDepth ? mx : mx / bs;
     c.fillStyle = '#22252c'; c.fillRect(0, y, w, r.h);
-    c.fillStyle = CTR_COLORS[r.metric];
+    c.fillStyle = PAL.ctr[r.metric];
     c.globalAlpha = .85;
     for (let x = 0; x < w; x++) {
       const a = v0 + x * np, b = a + np;
@@ -480,14 +501,14 @@ IOT.render = (function () {
     // slot_limit dashed line on in-flight depth
     if (r.dashLimit != null) {
       const ly = y + r.h - 1 - (r.dashLimit / mx) * (r.h - 2);
-      c.strokeStyle = '#e05a5a'; c.setLineDash([4, 3]);
+      c.strokeStyle = PAL.limit; c.setLineDash([4, 3]);
       c.beginPath(); c.moveTo(0, ly + .5); c.lineTo(w, ly + .5); c.stroke();
       c.setLineDash([]);
     }
     // requeue tick marks on queue depth row
     if (r.ticks && r.ticks.length) {
       const j0 = U.lowerBound(r.ticks, v0), j1 = U.upperBound(r.ticks, v1);
-      c.fillStyle = '#c66db3';
+      c.fillStyle = PAL.ctr.qdep;
       for (let j = j0; j < j1; j++) {
         const x = TS.tToPx(r.ticks[j]);
         c.fillRect(x, y + r.h - 3, 1, 2);
@@ -517,7 +538,7 @@ IOT.render = (function () {
     for (let x = 0; x < w; x++) {
       if (!acc[x]) continue;
       const t = acc[x] / mx;
-      c.fillStyle = `rgba(232,118,58,${0.15 + 0.85 * t})`;
+      c.fillStyle = rgba(PAL.heatDev, 0.15 + 0.85 * t);
       c.fillRect(x, y + 2, 1, hh - 4);
     }
   }
@@ -544,7 +565,7 @@ IOT.render = (function () {
     for (let x = 0; x < w; x++) {
       if (!acc[x]) continue;
       const t = acc[x] / mx;
-      c.fillStyle = `rgba(150,170,255,${0.15 + 0.85 * t})`;
+      c.fillStyle = rgba(PAL.heatQueue, 0.15 + 0.85 * t);
       c.fillRect(x, y + 2, 1, hh - 4);
     }
   }
@@ -572,7 +593,7 @@ IOT.render = (function () {
     for (let x = 0; x < w; x++) {
       if (!acc[x]) continue;
       const t = Math.min(1, acc[x] / mx);
-      c.fillStyle = `rgba(109,179,242,${0.15 + 0.85 * t})`;
+      c.fillStyle = rgba(PAL.heatProc, 0.15 + 0.85 * t);
       c.fillRect(x, y + 2, 1, hh - 4);
     }
   }
@@ -649,15 +670,15 @@ IOT.render = (function () {
     const s = IOT.state;
     if (s.area) {
       const x0 = TS.tToPx(s.area.t0), x1 = TS.tToPx(s.area.t1);
-      c.fillStyle = 'rgba(109,179,242,.25)';
+      c.fillStyle = hxRgb(PAL.sel, .25);
       c.fillRect(x0, 0, Math.max(1, x1 - x0), h);
-      c.fillStyle = '#6db3f2'; c.font = '9px sans-serif';
+      c.fillStyle = PAL.sel; c.font = '9px sans-serif';
       c.fillText(U.fmtNs(s.area.t1 - s.area.t0), (x0 + x1) / 2 + 4, h - 11);
     }
     // marks: vertical band + flag
     for (const m of s.marks.concat(s.transient ? [s.transient] : [])) {
       const x = TS.tToPx(m.t0);
-      c.fillStyle = m.persistent ? '#f4cf3f' : '#7ec8f0';
+      c.fillStyle = m.persistent ? PAL.markPersist : PAL.markTemp;
       c.fillRect(x - .5, 0, 1, h);
       c.beginPath(); c.moveTo(x, 0); c.lineTo(x + 6, 4); c.lineTo(x, 8);
       c.fill();
@@ -710,7 +731,7 @@ IOT.render = (function () {
       const arr = ctr.levels[li];
       let mx = 1e-9;
       for (const v of arr) mx = Math.max(mx, v);
-      c.fillStyle = CTR_COLORS[key];
+      c.fillStyle = PAL.ctr[key];
       c.globalAlpha = .8;
       for (let x = 0; x < w; x++) {
         const v = IOT.data.agg(ctr, li, x * np, (x + 1) * np, false);
@@ -740,18 +761,18 @@ IOT.render = (function () {
     // area selection
     if (s.area) {
       const x0 = TS.tToPx(s.area.t0), x1 = TS.tToPx(s.area.t1);
-      c.fillStyle = 'rgba(109,179,242,.12)';
+      c.fillStyle = hxRgb(PAL.sel, .12);
       c.fillRect(x0, 0, Math.max(1, x1 - x0), h);
-      c.strokeStyle = '#6db3f2';
+      c.strokeStyle = PAL.sel;
       c.strokeRect(x0 + .5, .5, Math.max(1, x1 - x0) - 1, h - 1);
     }
     // marks
     for (const m of s.marks.concat(s.transient ? [s.transient] : [])) {
       const x = TS.tToPx(m.t0);
-      c.fillStyle = m.persistent ? 'rgba(244,207,63,.18)'
-                                 : 'rgba(126,200,240,.18)';
+      c.fillStyle = m.persistent ? hxRgb(PAL.markPersist, .18)
+                                 : hxRgb(PAL.markTemp, .18);
       c.fillRect(x - 8, 0, 16, h);
-      c.fillStyle = m.persistent ? '#f4cf3f' : '#7ec8f0';
+      c.fillStyle = m.persistent ? PAL.markPersist : PAL.markTemp;
       c.fillRect(x - .5, 0, 1, h);
     }
     // Stage-3 hooks (flow arrows etc.)
@@ -796,5 +817,6 @@ IOT.render = (function () {
   }
 
   return { renderAll, renderRuler, renderOverview, updateBrush,
-           pickStep, ctx2d, reqLabel, CAT_COLORS };
+           pickStep, ctx2d, reqLabel, CAT_COLORS, PAL, latColorNs,
+           MODE_ORDER, MODE_LABEL };
 })();

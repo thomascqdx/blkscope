@@ -8,6 +8,7 @@
    Only endpoints with a currently-visible row are drawn. */
 IOT.flows = (function () {
   const U = IOT.util;
+  const PAL = IOT.render.PAL;
 
   function rowById() {
     const T = IOT.tracks.T;
@@ -61,7 +62,7 @@ IOT.flows = (function () {
 
   function arrow(c, x0, y0, x1, y1, dashed) {
     c.save();
-    c.strokeStyle = '#f4cf3f'; c.fillStyle = '#f4cf3f';
+    c.strokeStyle = PAL.flow; c.fillStyle = PAL.flow;
     c.lineWidth = 1.2;
     c.setLineDash(dashed ? [4, 3] : []);
     c.beginPath(); c.moveTo(x0, y0);
@@ -99,7 +100,7 @@ IOT.flows = (function () {
           const ty = rowY(rw);
           if (ty == null) continue;
           c.save();
-          c.strokeStyle = '#f4cf3f'; c.lineWidth = 1.4;
+          c.strokeStyle = PAL.flow; c.lineWidth = 1.4;
           c.setLineDash(dashed ? [3, 2] : []);
           c.strokeRect(Math.max(0, xa), ty - rw.h / 2 + 1,
                        Math.max(2, x1 - xa), rw.h - 2);
@@ -125,7 +126,7 @@ IOT.flows = (function () {
           const xa = TS.tToPx(R.t_ins[i] >= 0 ? R.t_ins[i] : R.t_iss0[i]);
           const xb = TS.tToPx(R.t_iss[i]);
           c.save();
-          c.strokeStyle = '#f4cf3f'; c.lineWidth = 1.4;
+          c.strokeStyle = PAL.flow; c.lineWidth = 1.4;
           c.strokeRect(xa, qy - qr.h / 2 + 1, Math.max(2, xb - xa),
                        qr.h - 2);
           c.restore();
@@ -136,7 +137,7 @@ IOT.flows = (function () {
       // highlight D segs that waited on this request
       const ds = D.reqDsegs.get(i) || [];
       c.save();
-      c.strokeStyle = '#f4cf3f'; c.lineWidth = 1.4;
+      c.strokeStyle = PAL.flow; c.lineWidth = 1.4;
       c.setLineDash([3, 2]);
       for (const di of ds) {
         const dr = dstRow(byId, DS.utid[di]);

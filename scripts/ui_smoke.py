@@ -181,6 +181,21 @@ def main() -> int:
         shot("01_initial")
 
         if args.load_only:
+            # overlays must open/close without errors on an empty or
+            # degraded payload too (design 5.6)
+            for sel, ov in (("#legendbtn", "legendov"),
+                            ("#manualbtn", "manualov")):
+                page.locator(sel).click()
+                page.wait_for_timeout(150)
+                assert page.evaluate(
+                    f"document.getElementById('{ov}')"
+                    ".classList.contains('open')"), f"{ov} did not open"
+                page.keyboard.press("Escape")
+                page.wait_for_timeout(80)
+                assert not page.evaluate(
+                    f"document.getElementById('{ov}')"
+                    ".classList.contains('open')"), f"{ov} did not close"
+            log("legend/manual open-close on degraded payload: OK")
             log(f"errors: {len(errors)}")
             for e in errors:
                 print("  ", e)
@@ -788,6 +803,86 @@ def main() -> int:
         })()""")
         page.wait_for_timeout(150)
         shot("27_queue_collapsed")
+
+        # ---- legend & manual overlays (design 5.6) -------------------------
+        page.locator("#legendbtn").click()
+        page.wait_for_timeout(150)
+        assert page.evaluate(
+            "document.getElementById('legendov').classList.contains('open')"), \
+            "legend overlay did not open"
+        # swatches are styled straight from PAL (single colour source)
+        sw_ok = page.evaluate("""(() => {
+          const P = IOT.render.PAL;
+          const rgb = h => {
+            const n = parseInt(h.slice(1), 16);
+            return 'rgb(' + (n >> 16) + ', ' + ((n >> 8) & 255) +
+                   ', ' + (n & 255) + ')';
+          };
+          const bgs = [...document.querySelectorAll('#legendov .lg-sw')]
+            .map(e => getComputedStyle(e).backgroundColor);
+          return [P.ctr.read, P.ctr.write, P.cat[0], P.cat[3]]
+            .every(h => bgs.includes(rgb(h)));
+        })()""")
+        log("legend swatches match PAL:", sw_ok)
+        assert sw_ok, "legend swatches don't match PAL colours"
+        shot("28_legend")
+        # C while the legend is open: mode cycles and the 「当前」tag follows
+        page.keyboard.press("c")
+        page.wait_for_timeout(120)
+        cur = page.evaluate("""(() => {
+          const m = [...document.querySelectorAll('#legendov .lg-mode')]
+            .filter(d => d.querySelector('.lg-cur'));
+          return m.length ? m[0].textContent : ''; })()""")
+        log("legend current mode after C:", cur)
+        assert "优先级" in cur, f"「当前」did not move to 优先级: {cur}"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(80)
+        assert not page.evaluate(
+            "document.getElementById('legendov').classList.contains('open')"), \
+            "legend did not close on Esc"
+        # L toggles the legend
+        page.keyboard.press("l")
+        page.wait_for_timeout(80)
+        assert page.evaluate(
+            "document.getElementById('legendov').classList.contains('open')"), \
+            "legend did not open on L"
+        page.keyboard.press("l")
+        page.wait_for_timeout(80)
+        assert not page.evaluate(
+            "document.getElementById('legendov').classList.contains('open')"), \
+            "legend did not close on second L"
+
+        # manual overlay: opens with TOC, clicking an entry scrolls the
+        # article; single keys are inert while a modal overlay is open
+        v_before = page.evaluate("[IOT.ts.V.v0, IOT.ts.V.v1]")
+        page.locator("#manualbtn").click()
+        page.wait_for_timeout(200)
+        assert page.evaluate(
+            "document.getElementById('manualov').classList.contains('open')"), \
+            "manual overlay did not open"
+        n_toc = page.evaluate(
+            "document.querySelectorAll('#manualtoc div').length")
+        log("manual TOC entries:", n_toc)
+        assert n_toc >= 10, f"manual TOC too short: {n_toc}"
+        sc0 = page.evaluate("document.getElementById('manualbody').scrollTop")
+        page.locator("#manualtoc div").nth(5).click()
+        page.wait_for_timeout(120)
+        sc1 = page.evaluate("document.getElementById('manualbody').scrollTop")
+        log("manual scrollTop:", sc0, "->", sc1)
+        assert sc1 != sc0, "TOC click did not scroll the article"
+        shot("29_manual")
+        page.keyboard.down("w")
+        page.wait_for_timeout(300)
+        page.keyboard.up("w")
+        page.wait_for_timeout(80)
+        v_after = page.evaluate("[IOT.ts.V.v0, IOT.ts.V.v1]")
+        assert v_after == v_before, \
+            f"view changed while manual open: {v_before} -> {v_after}"
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(80)
+        assert not page.evaluate(
+            "document.getElementById('manualov').classList.contains('open')"), \
+            "manual did not close on Esc"
 
         # ---- stats timing -------------------------------------------------
         stats_ms = page.evaluate("""(() => {
