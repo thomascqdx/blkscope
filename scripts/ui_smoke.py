@@ -129,6 +129,9 @@ def main() -> int:
     ap = argparse.ArgumentParser()
     ap.add_argument("html")
     ap.add_argument("--shots", default="work/ui")
+    ap.add_argument("--load-only", action="store_true",
+                  help="only load + check console errors (for empty/degraded "
+                       "payloads where interactions have no data)")
     args = ap.parse_args()
 
     from playwright.sync_api import sync_playwright
@@ -162,6 +165,14 @@ def main() -> int:
 
         log(f"load->ready: {load_ms:.0f} ms")
         shot("01_initial")
+
+        if args.load_only:
+            log(f"errors: {len(errors)}")
+            for e in errors:
+                print("  ", e)
+            print("OK" if not errors else "FAILED")
+            browser.close()
+            return 1 if errors else 0
 
         # assertion: first frame is complete — the 8:32 slot lanes must
         # have non-background pixels at ~90% of the canvas width

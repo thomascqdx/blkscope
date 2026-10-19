@@ -1,0 +1,3 @@
+This file is not a trace. It exists to verify the CLI fails cleanly
+on unparseable input. Lorem ipsum dolor sit amet, random bytes:
+x7f9ac2bd00eef11a9922cc44dd88e6b73355ff00112233445566778899

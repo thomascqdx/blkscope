@@ -20,3 +20,6 @@ tools/trace_processor_shell*
 
 # review scratch
 review_tmp/
+
+# test fixtures are small and must be versioned
+!tests/fixtures/**

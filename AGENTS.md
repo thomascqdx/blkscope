@@ -30,7 +30,8 @@
 - 框选统计按 issue→complete 与选区的重叠比例分摊字节数；速度 = 总量 / 选区时长。
 
 ## 验证
-- 单元测试：`.\.venv\Scripts\python -m pytest -q`（用合成事件，不依赖样例 Trace）。
+- 单元测试：`.\.venv\Scripts\python -m pytest -q`（合成事件单测 + `tests/test_cli_e2e.py` 用 tools/ 里的真实 trace_processor 跑端到端，二进制缺失时自动跳过）。
 - 样例校验：`.\.venv\Scripts\python scripts/validate_sample.py`（加载样例约 1~2 分钟），检查配对率、总字节数、文件关联率等。
-- 前端：生成 HTML 后用无头浏览器截图并检查控制台无报错。
+- 生成 HTML：`.\.venv\Scripts\iotrace <zip|trace> -o out`（支持多输入与 `--open` / `--json`）。
+- 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。
