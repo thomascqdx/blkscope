@@ -15,7 +15,7 @@ import json
 import numpy as np
 import pandas as pd
 
-from . import __version__
+from . import __version__, model as mod
 
 
 class _Strings:
@@ -59,12 +59,14 @@ def build_payload(m, name: str, source: str) -> dict:
 
     # threads / procs
     th = getattr(m, "threads", pd.DataFrame())
-    procs = {"upid": [], "pid": [], "name": []}
+    procs = {"upid": [], "pid": [], "name": [], "kt": []}
     threads = {"utid": [], "tid": [], "name": [], "upid": []}
     if len(th):
         up = th.dropna(subset=["upid"]).drop_duplicates("upid")
+        kt = mod.proc_kernel_flag(th)
         procs = {"upid": _ints(up["upid"]), "pid": _ints(up["pid"]),
-                 "name": st.col(up["process_name"])}
+                 "name": st.col(up["process_name"]),
+                 "kt": _ints(up["upid"].map(lambda u: kt.get(int(u), 0)))}
         threads = {"utid": _ints(th["utid"]), "tid": _ints(th["tid"]),
                    "name": st.col(th["thread_name"]),
                    "upid": _ints(th["upid"])}

@@ -172,6 +172,7 @@ IOT.data = (function () {
         const pi = D.procOf.get(p.upid);
         p.name = pi != null ? D.strs[D.procs.name[pi]] : ('upid:' + p.upid);
         p.pid = pi != null ? D.procs.pid[pi] : -1;
+        p.kt = pi != null && D.procs.kt ? D.procs.kt[pi] : 0;
         p.threads.sort((a, b) => b.bytes - a.bytes);
         return p;
       });
@@ -182,7 +183,7 @@ IOT.data = (function () {
     // ---- counters: {disk, all} each {read,write,iops,ind,qdep} -> levels[]
     D.counters = { disk: buildCounters(true), all: buildCounters(false) };
     D.inclLoop = false;
-    D.slowNs = 10e6;                   // slow-IO threshold (10 ms)
+    IOT.statsMod.buildReverse();       // req id -> [dst ids] (flow overlay)
     return D;
   }
 

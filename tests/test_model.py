@@ -11,7 +11,7 @@ from iotrace.model import (
     build_batches, build_dstate, build_file_hints, build_files,
     categorize, dev_kind, enrich_requests, match_make_requests,
     new_encode_dev, pair_requests, parse_rwbs, parse_slot_limit,
-    prio_flags, slot_limits,
+    prio_flags, proc_kernel_flag, slot_limits,
 )
 
 
@@ -387,3 +387,16 @@ def test_dstate_blockfn_caller_int_and_wait_src():
     # seg 1 (thread 6, iow=1): nearest request completing <= 2000+400
     seg1 = wreq[off[1]:off[2]]
     assert list(seg1) == [1] and wsrc[1] == 2
+
+
+def test_proc_kernel_flag():
+    threads = pd.DataFrame(
+        [(1, 0, "swapper/0", 10, 0, "swapper", -1),
+         (2, 2, "kthreadd", 20, 2, "kthreadd", 0),
+         (3, 120, "kworker/u16:0", 30, 120, "kworker", 2),
+         (4, 500, "app", 40, 500, "app", 1)],
+        columns=["utid", "tid", "thread_name", "upid", "pid",
+                 "process_name", "parent_pid"])
+    kt = proc_kernel_flag(threads)
+    assert kt == {10: 1, 20: 1, 30: 1, 40: 0}
+    assert proc_kernel_flag(threads.iloc[0:0]) == {}

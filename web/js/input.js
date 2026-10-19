@@ -41,6 +41,13 @@ IOT.input = (function () {
     document.getElementById('loopchk').addEventListener('change', e => {
       D.inclLoop = e.target.checked;
       requestRender(); IOT.render.renderOverview();
+      IOT.panels.showSelection();
+    });
+    const slowIn = document.getElementById('slowms');
+    slowIn.addEventListener('change', () => {
+      const v = parseFloat(slowIn.value);
+      if (isFinite(v) && v >= 0) { D.slowMs = v; requestRender(); }
+      IOT.panels.showSelection();
     });
     document.getElementById('helpbtn').addEventListener('click',
       () => IOT.panels.toggleHelp());
@@ -253,6 +260,7 @@ IOT.input = (function () {
     const p = evtPos(e, cv);
     const dx = Math.abs(p.x - drag.x0), dy = Math.abs(p.y - (drag.y0 || 0));
     if (drag.kind === 'selarea' && dx + dy < 4) return;   // still a click
+    drag.moved = true;                    // a real drag, not a click
     const t0 = TS.pxToT(Math.min(drag.x0, p.x));
     const t1 = TS.pxToT(Math.max(drag.x0, p.x));
     if (drag.kind === 'seltime') {
@@ -276,16 +284,19 @@ IOT.input = (function () {
   function onDragEnd(e) {
     if (!drag) return;
     const cv = document.getElementById('canvas');
-    if (drag.kind === 'selarea' && !IOT.state.area) {
-      // plain click: select entity / clear on empty
+    if (drag.kind === 'selarea' && !drag.moved) {
+      // plain click: select entity; empty click clears sel + area
       const p = evtPos(e, cv);
       const hit = hitAt(p.x, p.y);
       IOT.state.sel = hit && hit.type !== 'group' ? hit : null;
-      if (IOT.state.sel) IOT.state.area = null;
-      IOT.panels.showSelection();
+      IOT.state.area = null;
+      if (IOT.state.sel) IOT.panels.activate('sel');
+      else IOT.panels.showSelection();
       requestRender();
-    } else if (drag.kind === 'selarea' || drag.kind === 'seltime') {
-      IOT.panels.showSelection();
+    } else if ((drag.kind === 'selarea' || drag.kind === 'seltime') &&
+               drag.moved) {
+      if (IOT.state.area) IOT.panels.activate('area');
+      else IOT.panels.showSelection();
     }
     drag = null;
   }
@@ -375,7 +386,7 @@ IOT.input = (function () {
       if (e.code === 'KeyA') {               // select whole trace
         IOT.state.area = { t0: 0, t1: D.dur, rows: null };
         IOT.state.sel = null;
-        IOT.panels.showSelection();
+        IOT.panels.activate('area');
         requestRender(); e.preventDefault();
       }
       return;
@@ -408,7 +419,7 @@ IOT.input = (function () {
             IOT.state.area = { t0: r[0], t1: r[1],
                                rows: s.row ? new Set([s.row.id]) : null };
             IOT.state.sel = null;
-            IOT.panels.showSelection();
+            IOT.panels.activate('area');
           }
         }
         requestRender(); break;
@@ -427,6 +438,9 @@ IOT.input = (function () {
       }
       case 'BracketLeft': navStep(-1); break;
       case 'BracketRight': navStep(1); break;
+      case 'KeyC':
+        IOT.paint.cycle();
+        requestRender(); break;
       case 'Slash':
         // '?' is Shift+/ on US layouts (and dispatched key may be '/')
         if (e.shiftKey || e.key === '?') {

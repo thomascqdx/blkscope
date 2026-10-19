@@ -667,6 +667,21 @@ def dev_kind(dev) -> str:
     return "disk"
 
 
+def proc_kernel_flag(threads: pd.DataFrame) -> dict:
+    """upid -> 1 for kernel processes (pid 0/2 or parent pid 2, i.e.
+    kthreadd and its children like kworkers); else 0."""
+    out = {}
+    if threads.empty or "upid" not in threads:
+        return out
+    up = threads.dropna(subset=["upid"]).drop_duplicates("upid")
+    for _, r in up.iterrows():
+        pid, ppid = r.get("pid"), r.get("parent_pid")
+        kt = (pd.notna(pid) and int(pid) in (0, 2)) or \
+             (pd.notna(ppid) and int(ppid) == 2)
+        out[int(r["upid"])] = int(kt)
+    return out
+
+
 # ------------------------------------------------------ 3.6 dstate/blocked
 
 def build_dstate(dstate: pd.DataFrame, blocked: pd.DataFrame,

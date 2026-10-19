@@ -31,8 +31,9 @@ IOT.tracks = (function () {
       mkRows() {
         const rr = [];
         for (let s = 0; s < D.devLanes[di].length; s++) {
-          rr.push(row(this.id + '_s' + s, 'lane', H.lane, '槽位 ' + s,
-                      { di, slot: s }));
+          // 10px lanes: label only every 4th to avoid overlap
+          rr.push(row(this.id + '_s' + s, 'lane', H.lane,
+                      s % 4 === 0 ? '槽位 ' + s : '', { di, slot: s }));
         }
         return rr.length ? rr : [row(this.id + '_e', 'empty', H.lane,
                                      '（无请求）')];

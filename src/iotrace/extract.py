@@ -143,11 +143,12 @@ def extract_all(tp) -> Extracted:
     out.threads = _query(
         tp,
         "select t.utid, t.tid, t.name as thread_name, t.upid, "
-        "p.pid, p.name as process_name "
-        "from thread t left join process p using(upid)")
+        "p.pid, p.name as process_name, pp.pid as parent_pid "
+        "from thread t left join process p using(upid) "
+        "left join process pp on pp.upid = p.parent_upid")
     if out.threads.empty:
         out.threads = _empty(["utid", "tid", "thread_name", "upid",
-                              "pid", "process_name"])
+                              "pid", "process_name", "parent_pid"])
 
     # ts range per utid, used to disambiguate reused tids (design 3.2).
     out.thread_ranges = _query(

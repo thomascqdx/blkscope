@@ -24,11 +24,49 @@ IOT.render = (function () {
   }
 
   // ---- request rect painting -------------------------------------------
+  // color modes (design 5.5): cat -> prio -> proc -> lat, cycled by C
+  const MODE_ORDER = ['cat', 'prio', 'proc', 'lat'];
+  const MODE_LABEL = { cat: '类别', prio: '优先级', proc: '进程',
+                       lat: '延迟' };
+  IOT.paint = IOT.paint || {};
+  IOT.paint.mode = 'cat';
+  IOT.paint.cycle = function () {
+    const i = MODE_ORDER.indexOf(IOT.paint.mode);
+    IOT.paint.mode = MODE_ORDER[(i + 1) % MODE_ORDER.length];
+    const el = document.getElementById('cmode');
+    if (el) el.textContent = '配色: ' + MODE_LABEL[IOT.paint.mode];
+  };
+
+  function procColor(i) {
+    const D = IOT.data.D;
+    const ti = D.tidOf.get(D.req.utid[i]);
+    const upid = ti != null ? D.threads.upid[ti] : -1;
+    return `hsl(${U.hashHue(String(upid))}, 45%, 45%)`;
+  }
+  function latColor(i) {
+    const D = IOT.data.D;
+    const t = D.svcEnd[i] - D.tSub[i];
+    const f = U.clamp((Math.log10(Math.max(1, t)) - 5) / 2.3, 0, 1);
+    return `hsl(${Math.round(120 * (1 - f))}, 75%, 45%)`;
+  }
+
   function rectColor(i) {
-    // Stage-3 hook: color modes plug in here (IOT.paint override)
-    const fn = IOT.paint && IOT.paint.rectColor;
-    if (fn) return fn(i);
-    return CAT_COLORS[IOT.data.D.req.cat[i]] || '#9e9e9e';
+    const R = IOT.data.D.req;
+    switch (IOT.paint.mode) {
+      case 'prio': {
+        const p = R.prio[i];
+        if (p & 1) return '#e02b2b';         // RT red
+        if (p & 4) return '#e84fd8';         // UX magenta
+        if (p & 8) return '#f4cf3f';         // FG_META yellow
+        if (p & 16) return '#4e79a7';        // SYNC blue
+        if (p & 2) return '#4a4f57';         // IDLE dark gray
+        return '#9e9e9e';                    // other async gray
+      }
+      case 'proc': return procColor(i);
+      case 'lat': return latColor(i);
+      default:
+        return CAT_COLORS[R.cat[i]] || '#9e9e9e';
+    }
   }
 
   function drawReqRect(c, i, x0, x1, y, h, clipLabel) {
@@ -37,7 +75,7 @@ IOT.render = (function () {
     c.fillStyle = rectColor(i);
     c.fillRect(x0, y + 1, Math.max(1, w), h - 2);
     const slow = R.t_cmp[i] >= 0 &&
-      (R.t_cmp[i] - D.tSub[i]) >= D.slowNs;
+      (R.t_cmp[i] - D.tSub[i]) >= D.slowMs * 1e6;
     if (w >= 4) {
       const prio = R.prio[i];
       if (prio & 1) {                        // RT: 2px red top bar
@@ -383,7 +421,8 @@ IOT.render = (function () {
         const d = U.el('div',
           r.type === 'group' ? 'gname'
             : r.type === 'subgroup' ? 'gname subgrp'
-            : r.type === 'thead' ? 'tname' : 'tname sub',
+            : r.type === 'thead' ? 'tname'
+            : r.type === 'lane' ? 'tname sub lane' : 'tname sub',
           host);
         d.style.top = r.y0 + 'px';
         d.style.height = r.h + 'px';
@@ -454,13 +493,14 @@ IOT.render = (function () {
     }
   }
 
-  // unit + decimals so adjacent tick labels always differ
+  // unit + decimals so adjacent tick labels always differ; below 1ms
+  // step use seconds with enough decimals (Perfetto-style)
   function tickFormat(step) {
-    const units = [[1e9, 's'], [1e6, 'ms'], [1e3, 'µs'], [1, 'ns']];
-    let div = 1, suf = 'ns';
-    for (const [d, s] of units) { if (step >= d) { div = d; suf = s; break; } }
-    const rel = step / div;
-    const dec = Math.max(0, Math.ceil(-Math.log10(rel)));
+    let div, suf;
+    if (step < 1e6) { div = 1e9; suf = 's'; }
+    else if (step < 1e9) { div = 1e6; suf = 'ms'; }
+    else { div = 1e9; suf = 's'; }
+    const dec = Math.max(0, Math.ceil(-Math.log10(step / div)));
     return t => (t / div).toFixed(dec) + suf;
   }
 

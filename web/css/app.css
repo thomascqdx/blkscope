@@ -15,6 +15,12 @@ body {
 #devinfo { color: #999; font-size: 11px; }
 .spacer { flex: 1; }
 #looplbl { color: #aaa; cursor: pointer; white-space: nowrap; }
+#slowlbl { color: #aaa; white-space: nowrap; }
+#slowlbl input {
+  width: 48px; background: #181818; color: #ddd; border: 1px solid #444;
+  border-radius: 3px; padding: 1px 4px;
+}
+#cmode { color: #9aa4b5; font-size: 11px; white-space: nowrap; }
 #search {
   width: 200px; background: #181818; color: #ddd; border: 1px solid #444;
   border-radius: 3px; padding: 2px 6px;
@@ -61,6 +67,7 @@ body {
   text-overflow: ellipsis; color: #cfcfcf; cursor: pointer; font-size: 12px;
 }
 #namesinner .gname.subgrp { padding-left: 18px; color: #b9b9b9; font-size: 11px; }
+#namesinner .tname.sub.lane { font-size: 9px; color: #667; padding-top: 1px; }
 #namesinner .gname .arrow { width: 14px; color: #8ab4f8; flex: none; }
 #namesinner .gname .cnt { color: #777; font-size: 10px; margin-left: 4px; }
 #namesinner .tname {
@@ -89,6 +96,50 @@ body {
 #panelbody td.k { color: #888; white-space: nowrap; }
 #panelbody .guess { color: #e8b45a; font-size: 10px; margin-left: 4px; }
 #panelbody .mark { color: #e05a5a; }
+#panelbody .winnote { color: #e8b45a; font-size: 11px; margin-bottom: 4px; }
+#panelbody .subsel { display: flex; gap: 2px; margin-bottom: 5px; }
+#panelbody .subtab {
+  padding: 2px 10px; cursor: pointer; color: #999; font-size: 11px;
+  background: #1b1b1b; border-radius: 3px; border: 1px solid #333;
+}
+#panelbody .subtab.active { color: #fff; background: #333; }
+#panelbody table.stab { font-size: 11px; }
+#panelbody table.stab th {
+  padding: 1px 12px 1px 0; text-align: left; color: #8ab4f8;
+  cursor: pointer; white-space: nowrap; user-select: none;
+  border-bottom: 1px solid #444; position: sticky; top: -6px;
+  background: #242424;
+}
+#panelbody table.stab th.num { text-align: right; }
+#panelbody table.stab td.num { text-align: right; font-family: Consolas, monospace; }
+#panelbody table.stab tr.head td { color: #fff; font-weight: 600; }
+#panelbody table.stab tr.clk { cursor: pointer; }
+#panelbody table.stab tr.clk:hover td { background: #2e3d52; }
+#panelbody table.stab td .cap {
+  display: inline-block; max-width: 420px; overflow: hidden;
+  text-overflow: ellipsis; white-space: nowrap; vertical-align: bottom;
+}
+#panelbody .latblock { display: flex; align-items: flex-end; margin: 2px 0 10px; }
+#panelbody .latname { width: 58px; color: #ccc; font-size: 11px; padding-bottom: 14px; }
+#panelbody .latbars { display: flex; gap: 6px; align-items: flex-end; }
+#panelbody .latcol {
+  width: 40px; display: flex; flex-direction: column; align-items: center;
+  justify-content: flex-end; height: 96px;
+}
+#panelbody .latcnt { height: 11px; line-height: 11px; font-size: 9px; color: #bbb; }
+#panelbody .latbar { width: 38px; min-height: 0; }
+#panelbody .latlab {
+  height: 12px; line-height: 12px; font-size: 9px; color: #777;
+  white-space: nowrap;
+}
+#panelbody .latstats { margin-left: 14px; padding-bottom: 14px; color: #999; font-size: 11px; }
+#panelbody .waitlist { margin-top: 4px; font-size: 11px; }
+#panelbody .waitlist .k { color: #888; }
+#panelbody .waitlist .lk {
+  color: #8ab4f8; cursor: pointer; margin-right: 8px;
+  text-decoration: underline dotted;
+}
+#panelbody .waitlist .lk:hover { color: #fff; }
 
 #tooltip {
   position: fixed; z-index: 50; pointer-events: none; display: none;
