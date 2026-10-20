@@ -1,4 +1,4 @@
-# iotrace 开发规则
+# blkscope 开发规则
 
 需求与设计结论见 `docs/requirements.md`（修改需求先更新该文档）。
 
@@ -15,7 +15,7 @@
 - 不修改 git config，不 force push。
 
 ## 架构约定
-- `src/iotrace/`：Python 解析层（trace_processor → pandas → 模型 → JSON payload），产出单 HTML。
+- `src/blkscope/`：Python 解析层（trace_processor → pandas → 模型 → JSON payload），产出单 HTML。
 - `web/`：前端源码，原生 JS + Canvas，无外部依赖、无 CDN；由 Python 按清单内联成单文件 HTML。
 - 每个输入 Trace 输出一个 HTML。
 - 时间统一用相对 trace 起点的 ns（JS Number 精度足够）。
@@ -32,6 +32,6 @@
 ## 验证
 - 单元测试：`.\.venv\Scripts\python -m pytest -q`（合成事件单测 + `tests/test_cli_e2e.py` 用 tools/ 里的真实 trace_processor 跑端到端，二进制缺失时自动跳过）。
 - 样例校验：`.\.venv\Scripts\python scripts/validate_sample.py`（加载样例约 1~2 分钟），检查配对率、总字节数、文件关联率等。
-- 生成 HTML：`.\.venv\Scripts\iotrace <zip|trace> -o out`（支持多输入与 `--open` / `--json`）。
+- 生成 HTML：`.\.venv\Scripts\blkscope <zip|trace> -o out`（支持多输入与 `--open` / `--json`）。
 - 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。

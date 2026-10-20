@@ -33,7 +33,7 @@ IOT.app = (function () {
 
   function header() {
     const D = IOT.data.D, m = D.meta;
-    document.getElementById('title').textContent = m.name || 'iotrace';
+    document.getElementById('title').textContent = m.name || 'blkscope';
     const dv = m.device || {};
     const bits = [dv.android_device_manufacturer, dv.android_soc_model,
                   dv.android_build_fingerprint]
@@ -165,7 +165,7 @@ IOT.app = (function () {
       IOT.render.renderAll();
       IOT.ready = true;
     } catch (err) {
-      console.error('iotrace init failed:', err);
+      console.error('blkscope init failed:', err);
       document.body.innerHTML =
         `<div style="padding:20px;color:#f66">加载失败: ` +
         `${String(err && err.stack || err)}</div>`;

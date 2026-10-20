@@ -1,4 +1,4 @@
-"""iotrace CLI: parse input traces -> per-trace single-file HTML.
+"""blkscope CLI: parse input traces -> per-trace single-file HTML.
 
 Multiple inputs are processed independently: each resolved trace (incl. every
 trace member inside a .zip) produces <outdir>/<name>.html.  Name collisions
@@ -102,7 +102,7 @@ def _open(path: str) -> None:
 
 def main(argv=None) -> int:
     ap = argparse.ArgumentParser(
-        prog="iotrace",
+        prog="blkscope",
         description="Android/Perfetto 块设备 IO trace -> 单文件 HTML 分析页")
     ap.add_argument("inputs", nargs="+",
                     help=".zip / .trace / .pftrace / systrace 文本等")

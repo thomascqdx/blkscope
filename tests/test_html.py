@@ -6,8 +6,8 @@ import io
 import json
 import os
 
-from iotrace.html import render_html
-from iotrace.payload import encode_payload
+from blkscope.html import render_html
+from blkscope.payload import encode_payload
 
 
 def _make_web(tmp_path, manual=None):
@@ -36,7 +36,7 @@ def _make_web(tmp_path, manual=None):
 
 def test_render_replaces_placeholders_and_escapes(tmp_path, monkeypatch):
     web = _make_web(tmp_path)
-    monkeypatch.setenv("IOTRACE_WEB", str(web))
+    monkeypatch.setenv("BLKSCOPE_WEB", str(web))
     out = render_html("QUJD", 'x<y>"z"')
     assert "__TITLE__" not in out and "__PAYLOAD__" not in out
     assert "/*__CSS__*/" not in out and "/*__JS__*/" not in out
@@ -51,7 +51,7 @@ def test_render_replaces_placeholders_and_escapes(tmp_path, monkeypatch):
 
 def test_payload_roundtrip(tmp_path, monkeypatch):
     web = _make_web(tmp_path)
-    monkeypatch.setenv("IOTRACE_WEB", str(web))
+    monkeypatch.setenv("BLKSCOPE_WEB", str(web))
     payload = {"v": 1, "meta": {"name": "t"}, "strs": [], "req": {"dev": [1]}}
     b64 = encode_payload(payload)
     out = render_html(b64, "t")
@@ -63,7 +63,7 @@ def test_payload_roundtrip(tmp_path, monkeypatch):
 
 def test_manual_rendered_when_manifest_has_key(tmp_path, monkeypatch):
     web = _make_web(tmp_path, manual="## 章节\n\n正文 **粗体** 与 `code`\n")
-    monkeypatch.setenv("IOTRACE_WEB", str(web))
+    monkeypatch.setenv("BLKSCOPE_WEB", str(web))
     out = render_html("QUJD", "t")
     assert "<!--__MANUAL__-->" not in out
     assert '<h2 id="m-1">章节</h2>' in out
@@ -76,7 +76,7 @@ def test_manual_text_survives_literal_placeholders(tmp_path, monkeypatch):
     web = _make_web(
         tmp_path,
         manual="占位符 __PAYLOAD__ 与 /*__JS__*/ 按原样显示\n")
-    monkeypatch.setenv("IOTRACE_WEB", str(web))
+    monkeypatch.setenv("BLKSCOPE_WEB", str(web))
     out = render_html("QUJD", "t")
     assert out.count("__PAYLOAD__") == 1      # only the manual's literal
     assert "/*__JS__*/" in out
@@ -85,7 +85,7 @@ def test_manual_text_survives_literal_placeholders(tmp_path, monkeypatch):
 
 def test_manual_missing_key_leaves_empty(tmp_path, monkeypatch):
     web = _make_web(tmp_path)                  # manifest has no "manual"
-    monkeypatch.setenv("IOTRACE_WEB", str(web))
+    monkeypatch.setenv("BLKSCOPE_WEB", str(web))
     out = render_html("QUJD", "t")
     assert "<!--__MANUAL__-->" not in out
     assert "<article></article>" in out

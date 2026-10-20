@@ -10,12 +10,12 @@ TOOLS_DIR = os.path.join(ROOT, "tools")
 
 
 def find_tp_binary() -> str:
-    """Resolve trace_processor_shell: env IOTRACE_TP > tools/ > error."""
-    env = os.environ.get("IOTRACE_TP")
+    """Resolve trace_processor_shell: env BLKSCOPE_TP > tools/ > error."""
+    env = os.environ.get("BLKSCOPE_TP")
     if env:
         if os.path.isfile(env):
             return env
-        raise FileNotFoundError(f"IOTRACE_TP points to a missing file: {env}")
+        raise FileNotFoundError(f"BLKSCOPE_TP points to a missing file: {env}")
     name = "trace_processor_shell.exe" if sys.platform == "win32" else "trace_processor_shell"
     candidate = os.path.join(TOOLS_DIR, name)
     if os.path.isfile(candidate):
@@ -23,7 +23,7 @@ def find_tp_binary() -> str:
     raise FileNotFoundError(
         f"trace_processor_shell not found at {candidate}.\n"
         "Run: .\\.venv\\Scripts\\python scripts\\fetch_tp.py "
-        "(or set the IOTRACE_TP environment variable to the binary path)")
+        "(or set the BLKSCOPE_TP environment variable to the binary path)")
 
 
 def open_trace(path: str, load_timeout: int = 600):

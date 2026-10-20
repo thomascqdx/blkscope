@@ -25,7 +25,7 @@ pytestmark = pytest.mark.skipif(not TP.is_file(),
 
 def run_cli(*args):
     return subprocess.run(
-        [sys.executable, "-m", "iotrace", *args],
+        [sys.executable, "-m", "blkscope", *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
         cwd=ROOT, timeout=600)
 

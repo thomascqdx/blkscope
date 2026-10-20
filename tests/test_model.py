@@ -4,7 +4,7 @@ import numpy as np
 import pandas as pd
 import pytest
 
-from iotrace.model import (
+from blkscope.model import (
     BATCH_GAP_NS, CAT_DISCARD, CAT_FLUSH, CAT_META, CAT_READAHEAD,
     CAT_SYNC_READ, CAT_WRITE, PRIO_FG_META, PRIO_FUA, PRIO_IDLE, PRIO_META,
     PRIO_RT, PRIO_SYNC, PRIO_UX, assign_slots, associate_files,

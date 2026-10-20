@@ -27,11 +27,11 @@ SAMPLE = os.path.join(
 
 
 def main() -> None:
-    from iotrace.loader import resolve_inputs
-    from iotrace.tp import open_trace
-    from iotrace.extract import extract_all
-    from iotrace.model import build_model
-    from iotrace.payload import build_payload, encode_payload
+    from blkscope.loader import resolve_inputs
+    from blkscope.tp import open_trace
+    from blkscope.extract import extract_all
+    from blkscope.model import build_model
+    from blkscope.payload import build_payload, encode_payload
 
     path = sys.argv[1] if len(sys.argv) > 1 else SAMPLE
     out = io.StringIO()

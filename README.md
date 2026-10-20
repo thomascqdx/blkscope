@@ -1,4 +1,4 @@
-# iotrace
+# blkscope
 
 Android / Perfetto **块设备 IO trace 离线分析工具**：把一条 trace 转成**单个自包含的 HTML 文件**，双击即可在浏览器中分析，无需服务器、无网络依赖。
 
@@ -26,22 +26,22 @@ python -m venv .venv
 
 `fetch_tp.py` 复用 perfetto Python 包的二进制清单与版本；联网走代理可用
 `--proxy http://127.0.0.1:7890`（或环境变量 `HTTPS_PROXY`）。也可以直接把
-`trace_processor_shell.exe` 放进 `tools/`，或设环境变量 `IOTRACE_TP` 指向它。
+`trace_processor_shell.exe` 放进 `tools/`，或设环境变量 `BLKSCOPE_TP` 指向它。
 
 ## 用法
 
 ```powershell
 # 一个输入 -> out\<name>.html
-.\.venv\Scripts\iotrace samples\<xxx>.zip -o out
+.\.venv\Scripts\blkscope samples\<xxx>.zip -o out
 
 # 多个输入：每条 trace 一个 HTML，失败不中断，结尾打印汇总；exit code 非零表示有失败
-.\.venv\Scripts\iotrace a.zip b.trace -o out
+.\.venv\Scripts\blkscope a.zip b.trace -o out
 
 # 生成后直接打开浏览器
-.\.venv\Scripts\iotrace a.zip -o out --open
+.\.venv\Scripts\blkscope a.zip -o out --open
 
 # 只要数据（不生成 HTML）
-.\.venv\Scripts\iotrace a.zip -o out --json
+.\.venv\Scripts\blkscope a.zip -o out --json
 ```
 
 输出名冲突时自动追加数字后缀（`name_2.html`）。加载一条 200MB 的 trace
@@ -105,7 +105,7 @@ python -m venv .venv
 ## 目录
 
 ```
-src/iotrace/   Python 解析层（trace_processor -> pandas -> 模型 -> JSON payload）
+src/blkscope/   Python 解析层（trace_processor -> pandas -> 模型 -> JSON payload）
 web/           前端（原生 JS + Canvas，无外部依赖，内联进 HTML）
 tools/         trace_processor_shell（fetch_tp.py 下载，不入库）
 samples/       样例 trace     out/ work/   产物与临时文件（不入库）

@@ -6,7 +6,7 @@ trace name, the manifest-ordered CSS/JS inline contents, the base64+gzip
 payload and the rendered user manual. The manual comes from the manifest's
 optional "manual" entry (a Markdown file converted by mdlite) and is
 substituted LAST so literal placeholder text inside the manual survives.
-web/ lookup order: IOTRACE_WEB env > sys._MEIPASS (PyInstaller) > repo root.
+web/ lookup order: BLKSCOPE_WEB env > sys._MEIPASS (PyInstaller) > repo root.
 """
 
 from __future__ import annotations
@@ -19,18 +19,18 @@ import sys
 
 def web_dir() -> str:
     """Locate the web/ asset directory."""
-    env = os.environ.get("IOTRACE_WEB")
+    env = os.environ.get("BLKSCOPE_WEB")
     if env and os.path.isdir(env):
         return env
     meipass = getattr(sys, "_MEIPASS", None)          # PyInstaller bundle
     if meipass and os.path.isdir(os.path.join(meipass, "web")):
         return os.path.join(meipass, "web")
     root = os.path.dirname(os.path.dirname(os.path.dirname(
-        os.path.abspath(__file__))))                  # src/iotrace -> repo
+        os.path.abspath(__file__))))                  # src/blkscope -> repo
     cand = os.path.join(root, "web")
     if not os.path.isdir(cand):
         raise FileNotFoundError(f"web/ assets not found at {cand} "
-                                f"(set IOTRACE_WEB to override)")
+                                f"(set BLKSCOPE_WEB to override)")
     return cand
 
 

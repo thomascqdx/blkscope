@@ -3,7 +3,7 @@
 import os
 import zipfile
 
-from iotrace.loader import looks_like_trace, resolve_inputs
+from blkscope.loader import looks_like_trace, resolve_inputs
 
 
 def _trace_bytes():

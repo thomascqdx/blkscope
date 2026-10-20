@@ -1,5 +1,5 @@
 #!/usr/bin/env python
-"""UI smoke test for a generated iotrace HTML (design 5.x dev tool).
+"""UI smoke test for a generated blkscope HTML (design 5.x dev tool).
 
 Usage: .venv\\Scripts\\python scripts\\ui_smoke.py <html> [--shots outdir]
 

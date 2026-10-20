@@ -1,10 +1,10 @@
-# iotrace 使用手册
+# blkscope 使用手册
 
 面向组内 Android 性能 / 内核 IO 工程师。本手册内嵌在每个生成的 HTML 中（标题栏「手册」按钮），仓库中的 `web/manual.md` 是唯一来源。
 
 ## 1. 简介
 
-iotrace 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTML**：双击即可在浏览器里以 Perfetto 式交互分析块设备 IO，无需服务器、无网络依赖。
+blkscope 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTML**：双击即可在浏览器里以 Perfetto 式交互分析块设备 IO，无需服务器、无网络依赖。
 
 它能回答的问题：
 
@@ -19,10 +19,10 @@ iotrace 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTML
 ### 命令
 
 ```powershell
-.\.venv\Scripts\iotrace <输入...> [-o 输出目录] [--open] [--json]
+.\.venv\Scripts\blkscope <输入...> [-o 输出目录] [--open] [--json]
 ```
 
-- 一个输入：`iotrace samples\xxx.zip -o out` → `out\<trace名>.html`
+- 一个输入：`blkscope samples\xxx.zip -o out` → `out\<trace名>.html`
 - 多个输入：每条 trace 各产出一个 HTML，单个失败不中断，结尾打印汇总；有失败时进程 exit code 为 1
 - `.zip` 内可有多个 trace 成员，每个成员一个 HTML；非 trace 成员（图片、文档等）自动跳过
 - 输出名冲突时自动追加 `_2`、`_3` 后缀

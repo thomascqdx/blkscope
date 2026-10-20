@@ -1,6 +1,6 @@
 """mdlite.py: Markdown-subset -> HTML for the embedded manual."""
 
-from iotrace.mdlite import md_to_html
+from blkscope.mdlite import md_to_html
 
 
 def test_headings_get_sequential_ids():

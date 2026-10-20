@@ -1,9 +1,9 @@
 """Investigate requests whose requeue wait (t_iss - t_iss0) is abnormally long."""
 import glob
 import pandas as pd
-from iotrace.tp import open_trace
-from iotrace.extract import extract_all
-from iotrace.model import build_model
+from blkscope.tp import open_trace
+from blkscope.extract import extract_all
+from blkscope.model import build_model
 
 path = glob.glob('work/*.trace')[0]
 tp = open_trace(path)

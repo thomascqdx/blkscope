@@ -1,12 +1,12 @@
-# iotrace 设计（v1）
+# blkscope 设计（v1）
 
 ## 1. 目录结构
 
 ```
-pyproject.toml            # 包 iotrace，入口 `iotrace = iotrace.cli:main`；依赖 perfetto、pandas、numpy
-src/iotrace/
+pyproject.toml            # 包 blkscope，入口 `blkscope = blkscope.cli:main`；依赖 perfetto、pandas、numpy
+src/blkscope/
   cli.py                  # 参数解析；每个输入 Trace → 一个 HTML
-  tp.py                   # 定位 trace_processor 二进制（IOTRACE_TP 环境变量 > tools/ > 报错并提示 scripts/fetch_tp.py）
+  tp.py                   # 定位 trace_processor 二进制（BLKSCOPE_TP 环境变量 > tools/ > 报错并提示 scripts/fetch_tp.py）
   loader.py               # 输入格式处理：zip 解包、格式嗅探；产出 [(trace_name, path)]
   extract.py              # SQL 查询 → 原始事件 DataFrame（只做取数，不做逻辑）
   model.py                # 纯函数：配对、归属、优先级、文件关联、槽位、D 状态因果、数据质量
@@ -305,7 +305,7 @@ JSON → gzip → base64，放进 `<script type="application/octet-stream" id="p
 
 **内嵌手册**
 - 唯一来源 `web/manual.md`（随 web/ 一起打包）；`web/manifest.json` 增加 `"manual": "manual.md"`。
-- `src/iotrace/mdlite.py` 在生成时把 Markdown 子集转成 HTML（标题 `#`~`###`、段落、有序 / 无序列表（可按缩进嵌套）、GFM 表格、围栏代码块、引用、行内代码 / 粗体 / 链接），所有文本先做 HTML 转义；标题按顺序生成 id `m-<n>`。
+- `src/blkscope/mdlite.py` 在生成时把 Markdown 子集转成 HTML（标题 `#`~`###`、段落、有序 / 无序列表（可按缩进嵌套）、GFM 表格、围栏代码块、引用、行内代码 / 粗体 / 链接），所有文本先做 HTML 转义；标题按顺序生成 id `m-<n>`。
 - `html.py` 把结果替换到模板占位符 `<!--__MANUAL__-->`，**最后一个**替换（避免手册正文里的占位符字样被二次替换）；manifest 没有 manual 时替换为空。
 - 前端：标题栏「手册」按钮打开全屏浮层，左侧目录（h2 / h3，点击滚动到对应位置），右侧正文可选中复制；帮助浮层里也有「打开完整使用手册」链接。
 - 浮层打开时，除 `Esc` / `?` / `L` 外的单键快捷键不响应；手册打开时 `Ctrl+A` 只全选手册正文。

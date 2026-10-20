@@ -93,7 +93,7 @@ def resolve_inputs(paths: List[str]) -> Iterator[List[Tuple[str, str]]]:
                 raise FileNotFoundError(f"input not found: {path}")
             if zipfile.is_zipfile(path):
                 tmp = stack.enter_context(
-                    tempfile.TemporaryDirectory(prefix="iotrace_"))
+                    tempfile.TemporaryDirectory(prefix="blkscope_"))
                 out.extend(_extract_zip(path, tmp))
             else:
                 out.append((os.path.splitext(os.path.basename(path))[0], path))
