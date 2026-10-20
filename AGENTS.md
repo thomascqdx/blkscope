@@ -5,7 +5,6 @@
 ## 环境
 - 平台 Windows，默认 shell 是 PowerShell（没有 Git Bash），命令用 PowerShell 语法。
 - Python 依赖**只装在项目虚拟环境 `.venv`**，禁止安装到全局：`.\.venv\Scripts\python -m pip install ...`。
-- 联网失败时使用代理：pip 用 `--proxy http://127.0.0.1:7890`；其他工具设置 `HTTPS_PROXY=http://127.0.0.1:7890`（socks5 地址 `socks://127.0.0.1:7890`，但 pip/urllib 不支持 socks，优先用 http）。
 - trace_processor 二进制放在 `tools/`（被 gitignore），由 `scripts/fetch_tp.py` 获取；工具运行时必须可离线。
 - 样例 Trace 放在 `samples/`，临时产物放在 `work/` / `out/`，都不入库。
 

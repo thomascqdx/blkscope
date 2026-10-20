@@ -6,7 +6,7 @@ Reuses the URL/sha256 pinned by the installed perfetto Python package
 always matches the parser the package expects.
 
 Usage:
-    python scripts/fetch_tp.py [--proxy http://127.0.0.1:7890]
+    python scripts/fetch_tp.py [--proxy URL]
 
 Proxy defaults to the HTTPS_PROXY/https_proxy environment variable.
 If the perfetto package has already downloaded the same binary into its own

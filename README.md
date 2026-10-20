@@ -20,12 +20,12 @@ Android / Perfetto **块设备 IO trace 离线分析工具**：把一条 trace �
 
 ```powershell
 python -m venv .venv
-.\.venv\Scripts\python -m pip install --proxy http://127.0.0.1:7890 -e .[dev]
+.\.venv\Scripts\python -m pip install -e .[dev]
 .\.venv\Scripts\python scripts\fetch_tp.py          # 下载 trace_processor 到 tools/
 ```
 
-`fetch_tp.py` 复用 perfetto Python 包的二进制清单与版本；联网走代理可用
-`--proxy http://127.0.0.1:7890`（或环境变量 `HTTPS_PROXY`）。也可以直接把
+`fetch_tp.py` 复用 perfetto Python 包的二进制清单与版本，需要时可用
+`--proxy <url>`（或环境变量 `HTTPS_PROXY`）指定代理。也可以直接把
 `trace_processor_shell.exe` 放进 `tools/`，或设环境变量 `BLKSCOPE_TP` 指向它。
 
 ## 用法
