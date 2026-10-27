@@ -18,6 +18,7 @@ web/
 scripts/fetch_tp.py       # 下载 trace_processor_shell 到 tools/（支持 --proxy）
 scripts/validate_sample.py# 用 samples/ 中的样例跑全流程并打印校验指标
 scripts/build_release.py# 一键 Release 构建：单测 + PyInstaller 单文件 exe + 冒烟 + dist/ zip（含 sha256）
+build_release.bat         # 双击入口：检查 .venv / 自动安装 PyInstaller，调用 build_release.py，结束后暂停
 tests/                    # pytest；model.py 用合成 DataFrame 测试
 ```
 

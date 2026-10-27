@@ -56,9 +56,12 @@ python -m venv .venv
 
 ## 构建 Release
 
+**双击仓库根目录的 `build_release.bat`** 即可（缺 PyInstaller 时自动装进 `.venv`，结束后窗口暂停便于查看结果）。
+命令行等价写法：
+
 ```powershell
-.\.venv\Scripts\python -m pip install -e .[release]    # 安装 PyInstaller
-.\.venv\Scripts\python scripts\build_release.py         # 一键构建
+.\build_release.bat [参数]
+.\.venv\Scripts\python scripts\build_release.py [参数]   # 需先 pip install -e .[release]
 ```
 
 可选参数：`--skip-tests`（跳过单测）、`--allow-dirty`（允许工作区有未提交改动）、

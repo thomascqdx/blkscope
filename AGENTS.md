@@ -38,5 +38,5 @@
 - 样例校验：`.\.venv\Scripts\python scripts/validate_sample.py`（加载样例约 1~2 分钟），检查配对率、总字节数、文件关联率等。
 - 生成 HTML：`.\.venv\Scripts\blkscope <zip|trace|目录> -o out`（支持多输入、目录（只扫第一层）与 `--open` / `--json` / `--version`）。
 - 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
-- Release 构建：`.\.venv\Scripts\python scripts\build_release.py`（`--skip-tests` / `--allow-dirty` / `--proxy`）—— 跑单测 + PyInstaller 单文件 exe（内置 trace_processor 与 web/）+ exe 冒烟，产出 `dist/blkscope-<版本>-windows-x64.zip` 与 `.sha256`。
+- Release 构建：双击仓库根目录 `build_release.bat`（自动安装缺失的 PyInstaller，参数透传，双击时结束后暂停），等价于 `.\.venv\Scripts\python scripts\build_release.py`（`--skip-tests` / `--allow-dirty` / `--proxy`）—— 跑单测 + PyInstaller 单文件 exe（内置 trace_processor 与 web/）+ exe 冒烟，产出 `dist/blkscope-<版本>-windows-x64.zip` 与 `.sha256`。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。
