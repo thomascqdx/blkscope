@@ -633,7 +633,7 @@ IOT.panels = (function () {
         const pi = ti != null ? procListIdx(D.threads.upid[ti]) : -1;
         rows.push({
           vals: {
-            name: f.name + (f.hint ? ' · ' + f.hint : ''),
+            name: f.name,
             read: fmtB(f.read), n: f.n,
             procs: Object.keys(f.procs).length,
             sAvg: f.svcN ? U.fmtNs(f.svcSum / f.svcN) : '-',
