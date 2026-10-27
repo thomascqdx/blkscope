@@ -11,7 +11,11 @@
    rate = bytes_in / (w1−w0) (bytes/ns -> MB/s at display).
    q/svc/total averaged (unweighted) over f>0 requests.
    D-state time = Σ |seg ∩ W| over D segments of IO threads.
-   Device filter: disk-only unless opts.inclLoop. */
+   Device filter: disk-only unless opts.inclLoop.
+   Track filter: opts.tracks = Set of leaf keys (see tracks.js) or
+   null/undefined = unfiltered. Requests count iff marked by a
+   lane/qlane/treq/files key; D segments iff their dstate:<utid> key
+   is selected; ctr:* keys never filter (summary only). */
 IOT.statsMod = (function () {
   function procNameOf(D, upid) {
     const pi = D.procOf.get(upid);
@@ -26,12 +30,48 @@ IOT.statsMod = (function () {
   function stats(w0, w1, opts) {
     const D = IOT.data.D, R = D.req;
     const inclLoop = !!(opts && opts.inclLoop);
+    const tracks = opts && opts.tracks instanceof Set ? opts.tracks : null;
     const W0 = Math.max(0, Math.min(w0, w1));
     const W1 = Math.min(D.dur, Math.max(w0, w1));
     const span = Math.max(1, W1 - W0);
 
+    // ---- track filter: req mask + set of D-state utids (once)
+    let mask = null, dset = null, ioTracks = Infinity;
+    if (tracks) {
+      mask = new Uint8Array(D.nReq);
+      dset = new Set();
+      ioTracks = 0;
+      for (const k of tracks) {
+        const c = k.indexOf(':');
+        const p = c < 0 ? k : k.slice(0, c), rest = k.slice(c + 1);
+        if (p === 'ctr') continue;
+        ioTracks++;
+        if (p === 'lane') {
+          const [di, s] = rest.split(':').map(Number);
+          const l = D.devLanes[di] && D.devLanes[di][s];
+          if (l) for (const i of l) mask[i] = 1;
+        } else if (p === 'qlane') {
+          const [di, s] = rest.split(':').map(Number);
+          const l = D.devQueue[di] && D.devQueue[di][s];
+          if (l) for (const i of l) mask[i] = 1;
+        } else if (p === 'treq') {
+          const e = D.thrReqs.get(+rest);
+          if (e) for (const i of e.ids) mask[i] = 1;
+        } else if (p === 'files') {
+          const e = D.thrReqs.get(+rest);
+          if (e) for (const i of e.ids)
+            if (R.fsrc[i] > 0 && R.file[i] >= 0) mask[i] = 1;
+        } else if (p === 'dstate') {
+          dset.add(+rest);
+        }
+      }
+    }
+
     const out = Object.assign(newAgg(), {
       w0: W0, w1: W1, inclLoop,
+      filtered: tracks != null,      // a track filter is in effect
+      ioTracks,                      // non-ctr keys selected
+                                      // (Infinity when unfiltered)
       procs: {},        // upid -> agg + name
       threads: {},      // utid -> agg + name/tid/pname
       files: {},        // file id -> {read,n,svcAvg,procs:Set,thrRead:{}}
@@ -46,6 +86,7 @@ IOT.statsMod = (function () {
 
     // ---- requests
     for (let i = 0; i < D.nReq; i++) {
+      if (mask && !mask[i]) continue;
       const s = R.t_iss[i];
       if (s < 0) continue;
       // cmp_lost requests are zero-length (e == s, f = s∈W ? 1 : 0);
@@ -146,6 +187,7 @@ IOT.statsMod = (function () {
     // ---- D segments of IO threads: overlap with W
     const DS = D.dst;
     for (let i = 0; i < DS.utid.length; i++) {
+      if (dset && !dset.has(DS.utid[i])) continue;
       const a = DS.ts[i], e = a + DS.dur[i];
       const ov = Math.min(e, W1) - Math.max(a, W0);
       if (ov <= 0) continue;
@@ -182,6 +224,7 @@ IOT.statsMod = (function () {
         const isMain = th.tid === pg.pid;
         const isRender = th.name === 'RenderThread';
         if (!isMain && !isRender) continue;
+        if (dset && !dset.has(th.utid)) continue;
         const ds = D.thrD.get(th.utid) || [];
         let d = 0, iowD = 0, wSegs = 0, wTotal = 0, longest = -1, longestId = -1;
         for (const i of ds) {
@@ -250,6 +293,57 @@ IOT.statsMod = (function () {
     return out.slice(0, n);
   }
 
+  // per-counter summary over [w0,w1] (area '计数器（选区内）' table):
+  // avg = exact replay of buildCounters interval rules divided by the
+  // window span (rates bytes/ns, iops count/ns, depth plain count);
+  // peak = max over the finest (100µs) bins overlapping the window
+  // (rates normalized to per-ns). Device filter: disk unless inclLoop.
+  function counterSummary(w0, w1, inclLoop) {
+    const D = IOT.data.D, R = D.req;
+    const W0 = Math.max(0, Math.min(w0, w1));
+    const W1 = Math.min(D.dur, Math.max(w0, w1));
+    const span = Math.max(1, W1 - W0);
+    const out = {};
+    for (const m of IOT.data.COUNTER_DEFS) out[m] = { avg: 0, peak: 0 };
+
+    for (let i = 0; i < D.nReq; i++) {
+      const di = D.devIdx.get(R.dev[i]);
+      if (!inclLoop && (di == null || !D.diskDev[di])) continue;
+      const a = R.t_iss[i];
+      if (a >= 0) {
+        // same service interval as buildCounters
+        const b = Math.max(R.t_cmp[i] >= 0 ? R.t_cmp[i] : D.svcEnd[i],
+                           a + 1);
+        const ov = Math.min(b, W1) - Math.max(a, W0);
+        if (ov > 0) {
+          const share = ov / (b - a), op = D.rwbsOp[i];
+          if (op === 1) out.read.avg += R.bytes[i] * share;
+          else if (op === 2) out.write.avg += R.bytes[i] * share;
+          out.iops.avg += share;
+          out.ind.avg += ov;
+        }
+      }
+      if (R.t_ins[i] >= 0 && R.t_iss0[i] >= 0) {
+        const ov = Math.min(R.t_iss0[i], W1) - Math.max(R.t_ins[i], W0);
+        if (ov > 0) out.qdep.avg += ov;
+      }
+    }
+    for (const m of IOT.data.COUNTER_DEFS) out[m].avg /= span;
+
+    const set = D.counters[inclLoop ? 'all' : 'disk'];
+    const B = IOT.data.BIN_NS;
+    const i0 = Math.max(0, Math.floor(W0 / B));
+    const i1 = Math.max(i0, Math.floor((W1 - 1) / B));
+    for (const m of IOT.data.COUNTER_DEFS) {
+      const arr = set[m].levels[0];
+      let pk = 0;
+      for (let j = i0; j <= Math.min(i1, arr.length - 1); j++)
+        if (arr[j] > pk) pk = arr[j];
+      out[m].peak = (m === 'ind' || m === 'qdep') ? pk : pk / B;
+    }
+    return out;
+  }
+
   // reverse index: req id -> [dst ids] that waited on it (built once)
   function buildReverse() {
     const D = IOT.data.D;
@@ -264,7 +358,7 @@ IOT.statsMod = (function () {
     }
   }
 
-  return { stats, statsJson, buildReverse, topN };
+  return { stats, statsJson, buildReverse, topN, counterSummary };
 })();
 
 IOT.stats = IOT.statsMod.stats;

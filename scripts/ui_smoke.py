@@ -29,13 +29,57 @@ def load_payload(html_path: str) -> dict:
     return json.loads(gzip.decompress(base64.b64decode(m.group(1))))
 
 
-def py_stats(P: dict, w0: float, w1: float) -> dict:
+def py_stats(P: dict, w0: float, w1: float,
+             tracks: set | None = None) -> dict:
     """Independent re-implementation of the design-5.5 accounting rules
-    (disk-only window stats) — for cross-checking IOT.stats."""
+    (disk-only window stats) — for cross-checking IOT.stats.
+
+    tracks: optional iterable of leaf keys, same semantics as the JS
+    side (lane -> requests in that slot of devs[di]; treq/files ->
+    that thread's requests; dstate -> that thread's D segments; ctr
+    keys never filter). qlane keys are not cross-checked (the Python
+    side does not rebuild the greedy queue packing) and are ignored."""
     strs = P["strs"]
     R = P["req"]
     kind = {d["dev"]: d["kind"] for d in P["devs"]}
     dur = P["meta"]["dur"]
+    n_req = len(R["dev"])
+
+    # resolve leaf keys -> request ids / D-state utids
+    req_ids: set | None = None
+    d_utids: set | None = None
+    if tracks is not None:
+        req_ids = set()
+        d_utids = set()
+        tsub = [next((t for t in (R["t_make"][i], R["t_ins"][i],
+                                 R["t_iss0"][i]) if t >= 0), -1.0)
+                for i in range(n_req)]
+        devs = P["devs"]
+        for k in tracks:
+            head, _, rest = k.partition(":")
+            if head == "lane":
+                di, slot = (int(x) for x in rest.split(":"))
+                if not 0 <= di < len(devs):
+                    continue
+                dev = devs[di]["dev"]
+                for i in range(n_req):
+                    if (R["dev"][i] == dev and R["slot"][i] == slot
+                            and R["t_iss"][i] >= 0):
+                        req_ids.add(i)
+            elif head == "treq":
+                u = int(rest)
+                for i in range(n_req):
+                    if u >= 0 and R["utid"][i] == u and tsub[i] >= 0:
+                        req_ids.add(i)
+            elif head == "files":
+                u = int(rest)
+                for i in range(n_req):
+                    if (u >= 0 and R["utid"][i] == u and tsub[i] >= 0
+                            and R["fsrc"][i] > 0 and R["file"][i] >= 0):
+                        req_ids.add(i)
+            elif head == "dstate":
+                d_utids.add(int(rest))
+            # 'ctr' and 'qlane' keys: no effect here
     upid_of = {u: P["threads"]["upid"][i]
                for i, u in enumerate(P["threads"]["utid"])}
     pname = {P["procs"]["upid"][i]: strs[P["procs"]["name"][i]]
@@ -47,7 +91,9 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
     fr: dict[str, float] = {}
     prw: dict[str, list] = {}   # upid -> [read, write] prorated bytes
     trw: dict[str, list] = {}   # utid -> [read, write] prorated bytes
-    for i in range(len(R["dev"])):
+    for i in range(n_req):
+        if req_ids is not None and i not in req_ids:
+            continue
         s = R["t_iss"][i]
         if s < 0:
             continue
@@ -95,9 +141,19 @@ def py_stats(P: dict, w0: float, w1: float) -> dict:
         fi = R["file"][i]
         if R["fsrc"][i] > 0 and fi >= 0:
             fr[fi] = fr.get(fi, 0.0) + b
+    # D-segment overlap per utid (filtered by dstate keys when given)
+    DS = P["dst"]
+    dtime: dict[int, float] = {}
+    for i in range(len(DS["utid"])):
+        u = DS["utid"][i]
+        if d_utids is not None and u not in d_utids:
+            continue
+        ov = min(DS["ts"][i] + DS["dur"][i], w1) - max(DS["ts"][i], w0)
+        if ov > 0:
+            dtime[u] = dtime.get(u, 0.0) + ov
     return {"n": n, "total": tot, "read": rd, "write": wr, "other": ot,
             "procs": pb, "files": fr, "pname": pname,
-            "procs_rw": prw, "thrs_rw": trw}
+            "procs_rw": prw, "thrs_rw": trw, "dtime": dtime}
 
 
 def py_main_thread_dtime(P: dict, top_name: str, w0: float, w1: float):
@@ -392,7 +448,7 @@ def main() -> int:
         # ---- Stage-3 tabs -------------------------------------------------
         def set_area(a, b):
             page.evaluate(f"""(() => {{
-              IOT.state.area = {{t0: {a}, t1: {b}}};
+              IOT.state.area = {{t0: {a}, t1: {b}, tracks: null}};
               IOT.state.sel = null;
               IOT.render.renderAll();
               IOT.panels.showSelection();
@@ -884,6 +940,206 @@ def main() -> int:
             "document.getElementById('manualov').classList.contains('open')"), \
             "manual did not close on Esc"
 
+        # ---- track checkboxes: drag-selected track filter (§6) -----------
+        page.evaluate("""(() => {
+          window.scrollTo(0, 0);   // earlier locator clicks may have
+                                 // scrolled the document horizontally
+          IOT.input.hideTip();
+          IOT.state.sel = null; IOT.state.area = null;
+          IOT.ts.init(IOT.data.D.dur);
+          for (const g of IOT.tracks.T.groups)
+            if (g.kind === 'proc') IOT.tracks.setExpanded(g.id, false);
+          IOT.tracks.setExpanded('dev2080', true);
+          const g = IOT.tracks.T.groups.find(g => g.kind === 'proc');
+          IOT.tracks.setExpanded(g.id, true);
+          const hr = IOT.tracks.T.rows.find(
+            r => r.type === 'group' && r.g === g);
+          const scroll = document.getElementById('scroll');
+          scroll.scrollTop = Math.max(0, hr.y0 - 60);
+          IOT.state.scrollTop = scroll.scrollTop;
+          IOT.render.renderAll(); IOT.panels.showSelection();
+        })()""")
+        page.wait_for_timeout(150)
+
+        # real drag across the first thread's rows of the expanded proc
+        # group -> area.tracks = union of those rows' drag leaves
+        drag = page.evaluate("""(() => {
+          const g = IOT.tracks.T.groups.find(g => g.kind === 'proc');
+          const p = IOT.data.D.procList[g.pi];
+          const u = p.threads[0].utid;
+          const want = IOT.tracks.T.rows.filter(r => r.utid === u &&
+            ['thead', 'dstate', 'treq', 'files'].includes(r.type));
+          const y0 = want[0].y0,
+                y1 = want[want.length - 1].y0 + want[want.length - 1].h;
+          const scroll = document.getElementById('scroll');
+          const rc = document.getElementById('canvas')
+                       .getBoundingClientRect();
+          const exp = new Set();
+          for (const r of want)
+            for (const k of IOT.tracks.rowDragLeaves(r)) exp.add(k);
+          return { x0: rc.left + rc.width * .3,
+                   x1: rc.left + rc.width * .7,
+                   y0: rc.top + y0 + 2 - scroll.scrollTop,
+                   y1: rc.top + y1 - 2 - scroll.scrollTop,
+                   exp: [...exp], utid: u };
+        })()""")
+        assert drag["exp"], "no leaf rows found for the top thread"
+        page.mouse.move(drag["x0"], drag["y0"])
+        page.mouse.down()
+        page.mouse.move(drag["x1"], drag["y1"], steps=8)
+        page.mouse.up()
+        page.wait_for_timeout(150)
+        shot("30_track_chk_drag")
+        tr = page.evaluate(
+            "IOT.state.area && IOT.state.area.tracks "
+            "? [...IOT.state.area.tracks] : null")
+        log("drag tracks:", tr)
+        assert tr is not None, "canvas drag did not produce a track set"
+        trk = set(tr)
+        for k in drag["exp"]:
+            assert k in trk, f"dragged leaf {k} missing from area.tracks"
+        assert any(k.startswith("treq:") for k in trk), \
+            "no treq key after thread-row drag"
+        assert any(k.startswith("dstate:") for k in trk) or \
+            not any(k.startswith("dstate:") for k in drag["exp"]), \
+            "dstate key expected but missing"
+        assert not any(k.startswith("ctr:") for k in trk), \
+            "ctr key leaked into the drag track set"
+
+        # click the thread-header checkbox -> its leaves toggle off
+        chk = page.evaluate("""(() => {
+          const g = IOT.tracks.T.groups.find(g => g.kind === 'proc');
+          const u = IOT.data.D.procList[g.pi].threads[0].utid;
+          const d = [...document.querySelectorAll(
+            '#namesinner [data-rid]')].find(d =>
+              d._row && d._row.type === 'thead' && d._row.utid === u);
+          if (!d || !d._chk) return null;
+          const r = d._chk.getBoundingClientRect();
+          const el = document.elementFromPoint(
+            r.left + r.width / 2, r.top + r.height / 2);
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+                   hit: el ? (el.className || el.tagName) : 'none',
+                   cls: d._chk.className,
+                   gone: IOT.tracks.rowAllLeaves(d._row) };
+        })()""")
+        assert chk, "thead checkbox not found"
+        assert chk["hit"] == "chk on", \
+            f"chk click point hit {chk['hit']}, not the checkbox"
+        page.mouse.click(chk["x"], chk["y"])
+        page.wait_for_timeout(150)
+        tr2 = set(page.evaluate("[...IOT.state.area.tracks]"))
+        for k in chk["gone"]:
+            assert k not in tr2, f"{k} still selected after chk click"
+        log("chk click removed:", chk["gone"])
+        # second click re-adds the thread's leaves (none -> all)
+        page.mouse.click(chk["x"], chk["y"])
+        page.wait_for_timeout(120)
+        tr3 = set(page.evaluate("[...IOT.state.area.tracks]"))
+        for k in chk["gone"]:
+            assert k in tr3, f"{k} not re-added after 2nd chk click"
+
+        # 当前选择 请求数 must equal the filtered stats
+        click_tab("当前选择")
+        nreq = page.evaluate("""(() => {
+          for (const tr of document.querySelectorAll(
+              '#panelbody table tr')) {
+            const k = tr.querySelector('td.k');
+            if (k && k.textContent.trim() === '请求数')
+              return parseInt(tr.children[1].textContent, 10);
+          }
+          return -1; })()""")
+        jsn = page.evaluate("""IOT.stats(IOT.state.area.t0,
+          IOT.state.area.t1,
+          {inclLoop:false, tracks:IOT.state.area.tracks}).n""")
+        log("filtered 请求数:", nreq, "| IOT.stats n:", jsn)
+        assert nreq == jsn, "filtered area summary 请求数 mismatch"
+        txt = page.evaluate(
+            "document.getElementById('panelbody').innerText")
+        assert "轨道：已选" in txt and "条" in txt, \
+            "track toolbar line missing"
+        shot("31_track_chk_panel")
+
+        # 反选 / 全选 / 清空 toolbar ops
+        prev = len(tr3)
+        page.locator("#panelbody .subtab", has_text="反选").first.click()
+        page.wait_for_timeout(120)
+        total_leaves = page.evaluate("IOT.tracks.allLeaves().length")
+        sz = page.evaluate("IOT.state.area.tracks.size")
+        log("invert:", prev, "->", sz, "of", total_leaves)
+        assert sz == total_leaves - prev, "反选 size wrong"
+        page.locator("#panelbody .subtab", has_text="全选").first.click()
+        page.wait_for_timeout(120)
+        assert page.evaluate("IOT.state.area.tracks === null"), \
+            "全选 did not reset tracks to null"
+        page.locator("#panelbody .subtab", has_text="清空").first.click()
+        page.wait_for_timeout(120)
+        assert page.evaluate("IOT.state.area.tracks.size === 0"), \
+            "清空 did not empty the track set"
+        txt = page.evaluate(
+            "document.getElementById('panelbody').innerText")
+        assert "未选中 IO 轨道" in txt, \
+            "empty-track message missing after 清空"
+        shot("32_track_chk_empty")
+
+        # ticking a counter row: ctr keys never filter, so the IO-empty
+        # message stays and the 计数器（选区内）table appears
+        page.evaluate("""(() => {
+          window.scrollTo(0, 0);
+          IOT.tracks.setExpanded('ov', true);   // earlier steps may
+                                                // have collapsed it
+          document.getElementById('scroll').scrollTop = 0;
+          IOT.state.scrollTop = 0; IOT.render.renderAll();
+        })()""")
+        ctr = page.evaluate("""(() => {
+          const host = document.getElementById('namesinner');
+          const d = host.querySelector('[data-rid="ctr_read"]');
+          if (!d) return { err: 'no row', kids: host.children.length,
+                           gen: host._gen === IOT.tracks.T.rows };
+          if (!d._chk) return { err: 'no chk', cls: d.className };
+          const r = d._chk.getBoundingClientRect();
+          return { x: r.left + r.width / 2,
+                   y: r.top + r.height / 2 };
+        })()""")
+        log("ctr chk:", ctr)
+        assert ctr and "x" in ctr, \
+            f"ctr_read checkbox not found: {ctr}"
+        page.mouse.click(ctr["x"], ctr["y"])
+        page.wait_for_timeout(150)
+        txt = page.evaluate(
+            "document.getElementById('panelbody').innerText")
+        assert "计数器（选区内）" in txt and "读带宽" in txt, \
+            "counter summary table missing after ctr tick"
+        assert "未选中 IO 轨道" in txt, \
+            "ctr-only selection should keep IO stats empty"
+        shot("33_track_chk_ctr")
+
+        # group-header checkbox must not expand/collapse the group
+        grp = page.evaluate("""(() => {
+          const d = document.querySelector(
+            '#namesinner [data-rid="dev2080"]');
+          if (!d || !d._chk) return null;
+          const r = d._chk.getBoundingClientRect();
+          return { x: r.left + r.width / 2, y: r.top + r.height / 2,
+                   exp: IOT.tracks.T.byId.get('dev2080').expanded };
+        })()""")
+        assert grp and grp["exp"], "dev2080 not expanded for chk test"
+        sz0 = page.evaluate("IOT.state.area.tracks.size")
+        page.mouse.click(grp["x"], grp["y"])
+        page.wait_for_timeout(120)
+        assert page.evaluate(
+            "IOT.tracks.T.byId.get('dev2080').expanded") is True, \
+            "group checkbox toggled expansion"
+        sz1 = page.evaluate("IOT.state.area.tracks.size")
+        assert sz1 > sz0, "group checkbox did not add its leaves"
+        log(f"group chk: {sz0} -> {sz1} leaves, still expanded")
+
+        # Esc clears the area (and its track filter) entirely
+        page.keyboard.press("Escape")
+        page.wait_for_timeout(80)
+        assert page.evaluate("IOT.state.area === null"), \
+            "Esc did not clear the area selection"
+        shot("34_track_chk_cleared")
+
         # ---- stats timing -------------------------------------------------
         stats_ms = page.evaluate("""(() => {
           const t0 = performance.now();
@@ -990,6 +1246,84 @@ def main() -> int:
         assert not mismatches, "stats cross-check failed: " + \
             "; ".join(mismatches)
         log("stats cross-check: OK")
+
+        # ---- filtered cross-check: track set built in JS ---------------
+        # ~4 lanes of the busiest disk + treq of the top-2 threads of the
+        # top process + files of another thread + dstate of its main
+        # thread + ctr:read (ctr must not affect request stats)
+        sel_tracks = page.evaluate("""(() => {
+          const D = IOT.data.D;
+          const keys = new Set();
+          const reqCount = D.devs.map((d, di) =>
+            D.devLanes[di].reduce((a, l) => a + l.length, 0));
+          let bi = -1, bn = -1;
+          D.devs.forEach((d, di) => {
+            if (d.kind === 'disk' && reqCount[di] > bn) {
+              bn = reqCount[di]; bi = di;
+            }
+          });
+          const nl = D.devLanes[bi].length;
+          for (let s = 0; s < nl && keys.size < 4;
+               s += Math.ceil(nl / 4))
+            keys.add(`lane:${bi}:${s}`);
+          const p = D.procList[0];
+          const main = p.threads.find(t => t.tid === p.pid)
+                    || p.threads[0];
+          for (const th of p.threads.slice(0, 2)) {
+            const e = D.thrReqs.get(th.utid);
+            if (e && e.sub.length) keys.add('treq:' + th.utid);
+          }
+          let fu = null;
+          outer:
+          for (const pg of D.procList)
+            for (const th of pg.threads.slice(pg === p ? 2 : 0))
+              if ((D.thrBatches.get(th.utid) || []).length) {
+                fu = th.utid; break outer;
+              }
+          if (fu != null) keys.add('files:' + fu);
+          if ((D.thrD.get(main.utid) || []).length)
+            keys.add('dstate:' + main.utid);
+          keys.add('ctr:read');
+          return { keys: [...keys], mainUtid: main.utid };
+        })()""")
+        log("filtered cross-check tracks:", sel_tracks["keys"])
+        w0, w1 = 5e9, 8e9
+        py = py_stats(payload, w0, w1, tracks=set(sel_tracks["keys"]))
+        js = page.evaluate(
+            "IOT.statsMod.statsJson(5e9, 8e9, {inclLoop:false,"
+            "tracks:new Set(" + json.dumps(sel_tracks["keys"]) + ")})")
+        fmism = []
+        log(f"  filtered n py={py['n']} js={js['n']} | "
+            f"total py={py['total']:.0f} js={js['total']:.0f} | "
+            f"read {py['read']:.0f}/{js['read']:.0f} "
+            f"write {py['write']:.0f}/{js['write']:.0f} "
+            f"other {py['other']:.0f}/{js['other']:.0f}")
+        if js["n"] != py["n"]:
+            fmism.append(f"n: js={js['n']} py={py['n']}")
+        for k in ("total", "read", "write", "other"):
+            if not close(py[k], js[k]):
+                fmism.append(f"{k}: js={js[k]} py={py[k]}")
+        pt = sorted(py["procs"].items(), key=lambda x: -x[1])[:5]
+        jt = sorted(js["procs"].items(), key=lambda x: -x[1]["total"])[:5]
+        log("  filtered procs top5 py:",
+            [(py["pname"].get(k, str(k)), round(v)) for k, v in pt])
+        log("                     js:",
+            [(v["name"], round(v["total"])) for k, v in jt])
+        if len(pt) != len(jt):
+            fmism.append(f"procs len: js={len(jt)} py={len(pt)}")
+        for (uk, v), (jk, jv) in zip(pt, jt):
+            if str(uk) != jk or not close(v, jv["total"]):
+                fmism.append(
+                    f"proc {uk}!={jk} {v:.0f}!={jv['total']:.0f}")
+        mu = sel_tracks["mainUtid"]
+        pd = py["dtime"].get(mu, 0.0)
+        jd = js["dTime"].get(str(mu), 0.0)
+        log(f"  filtered D time main utid={mu}: py={pd:.0f} js={jd}")
+        if not close(pd, jd):
+            fmism.append(f"dtime {mu}: js={jd} py={pd}")
+        assert not fmism, \
+            "filtered stats cross-check failed: " + "; ".join(fmism)
+        log("filtered stats cross-check: OK")
 
         browser.close()
 

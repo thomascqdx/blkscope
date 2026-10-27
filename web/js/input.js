@@ -318,15 +318,17 @@ IOT.input = (function () {
     if (drag.kind === 'seltime') {
       const rp = evtPos(e, document.getElementById('ruler'));
       const a = Math.min(drag.x0, rp.x), b = Math.max(drag.x0, rp.x);
-      IOT.state.area = { t0: TS.pxToT(a), t1: TS.pxToT(b), rows: null };
+      IOT.state.area = { t0: TS.pxToT(a), t1: TS.pxToT(b), tracks: null };
       IOT.state.sel = null;
     } else {
       const yTop = Math.min(drag.y0, p.y) + IOT.state.scrollTop;
       const yBot = Math.max(drag.y0, p.y) + IOT.state.scrollTop;
-      const rows = new Set();
+      const tracks = new Set();
       for (const r of TR.T.rows)
-        if (r.y0 + r.h > yTop && r.y0 < yBot) rows.add(r.id);
-      IOT.state.area = { t0, t1, rows };
+        if (r.y0 + r.h > yTop && r.y0 < yBot)
+          for (const k of TR.rowDragLeaves(r)) tracks.add(k);
+      IOT.state.area = { t0, t1, tracks };
+      TR.sel.set(tracks);             // all-covered -> null (no filter)
       IOT.state.sel = null;
     }
     IOT.panels.showSelection();
@@ -391,6 +393,19 @@ IOT.input = (function () {
 
   // ---------------- names column / splitter ----------------
   function onNameDown(e) {
+    // track checkbox: toggles the row's leaves in the area filter;
+    // must NOT toggle group expansion
+    if (e.target.classList && e.target.classList.contains('chk')) {
+      const d = e.target.closest('[data-rid]');
+      const r = d && d._row;
+      if (r) {
+        TR.sel.toggleRow(r);
+        IOT.panels.showSelection();
+        requestRender();
+      }
+      e.preventDefault();
+      return;
+    }
     const names = document.getElementById('namesinner');
     const y = e.clientY - names.getBoundingClientRect().top;
     const r = TR.rowAt(y);
@@ -463,7 +478,7 @@ IOT.input = (function () {
           const s = getSelection();
           s.removeAllRanges(); s.addRange(r);
         } else {                             // select whole trace
-          IOT.state.area = { t0: 0, t1: D.dur, rows: null };
+          IOT.state.area = { t0: 0, t1: D.dur, tracks: null };
           IOT.state.sel = null;
           IOT.panels.activate('area');
           requestRender();
@@ -522,8 +537,9 @@ IOT.input = (function () {
         if (s) {
           const r = selRange(s);
           if (r) {
+            const lv = s.row ? TR.rowAllLeaves(s.row) : [];
             IOT.state.area = { t0: r[0], t1: r[1],
-                               rows: s.row ? new Set([s.row.id]) : null };
+                               tracks: lv.length ? new Set(lv) : null };
             IOT.state.sel = null;
             IOT.panels.activate('area');
           }

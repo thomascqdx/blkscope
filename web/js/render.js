@@ -600,6 +600,20 @@ IOT.render = (function () {
   function R_bytesOf(i) { return IOT.data.D.req.bytes[i]; }
 
   // ---- names column ----------------------------------------------------
+  // which rows get an area-selection checkbox: leaf rows (except treq
+  // sub-rows si>0 — one key covers the whole thread's IO 请求 rows —
+  // and 'empty' rows) plus tri-state headers (group/subgroup/qgroup/thead)
+  function chkFor(r) {
+    switch (r.type) {
+      case 'ctr': case 'lane': case 'qlane': case 'dstate':
+      case 'files': case 'thead': case 'group': case 'subgroup':
+      case 'qgroup':
+        return true;
+      case 'treq': return r.si === 0;
+      default: return false;
+    }
+  }
+
   function renderNames() {
     const T = TR.T;
     const host = document.getElementById('namesinner');
@@ -617,6 +631,8 @@ IOT.render = (function () {
         d.style.top = r.y0 + 'px';
         d.style.height = r.h + 'px';
         d.dataset.rid = r.id;
+        d._row = r;
+        if (chkFor(r)) d._chk = U.el('span', 'chk', d);
         if (r.type === 'group' || r.type === 'subgroup') {
           const ar = U.el('span', 'arrow', d);
           const exp = r.type === 'group' ? r.g.expanded : r.sg.expanded;
@@ -624,11 +640,28 @@ IOT.render = (function () {
           const lb = U.el('span', 'lbl', d);
           lb.textContent = r.label;
         } else {
-          d.textContent = r.label;
+          d.append(r.label);            // keep the chk span
         }
       }
       host._gen = T.rows;
       host._selRid = undefined;          // rebuild cleared highlights
+      host._chkKey = undefined;          // force checkbox re-sync below
+    }
+    // checkboxes exist only while an area selection is active; states
+    // re-sync on rebuild or when area.tracks identity changes (Set is
+    // never mutated in place)
+    const area = IOT.state.area;
+    const chkKey = area ? (area.tracks || true) : false;
+    if (host._chkKey !== chkKey) {
+      for (const d of host.children) {
+        const c = d._chk;
+        if (!c) continue;
+        if (!area) { c.style.display = 'none'; continue; }
+        c.style.display = '';
+        const st = TR.sel.rowState(d._row);
+        c.className = 'chk' + (st === 2 ? ' on' : st === 1 ? ' part' : '');
+      }
+      host._chkKey = chkKey;
     }
     // highlight the row of the current selection (e.g. a clicked thead)
     const selRow = IOT.state.sel && IOT.state.sel.row;
@@ -761,10 +794,32 @@ IOT.render = (function () {
     // area selection
     if (s.area) {
       const x0 = TS.tToPx(s.area.t0), x1 = TS.tToPx(s.area.t1);
+      const xw = Math.max(1, x1 - x0);
       c.fillStyle = hxRgb(PAL.sel, .12);
-      c.fillRect(x0, 0, Math.max(1, x1 - x0), h);
-      c.strokeStyle = PAL.sel;
-      c.strokeRect(x0 + .5, .5, Math.max(1, x1 - x0) - 1, h - 1);
+      if (s.area.tracks == null) {
+        c.fillRect(x0, 0, xw, h);
+        c.strokeStyle = PAL.sel;
+        c.strokeRect(x0 + .5, .5, xw - 1, h - 1);
+      } else {
+        // filtered: shade the band only on rows whose leaves are
+        // (partially) selected; headers of expanded groups are skipped
+        // (their visible children carry the shading)
+        for (const r of TR.T.rows) {
+          const y = r.y0 - s.scrollTop;
+          if (y + r.h < 0 || y > h) continue;
+          if (!TR.sel.rowState(r)) continue;
+          if ((r.type === 'group' && r.g.expanded) ||
+              (r.type === 'subgroup' && r.sg.expanded) ||
+              (r.type === 'qgroup' && r.qExp)) continue;
+          c.fillRect(x0, y, xw, r.h);
+        }
+        // 1px vertical edges stay full height
+        c.strokeStyle = PAL.sel;
+        c.beginPath();
+        c.moveTo(x0 + .5, 0); c.lineTo(x0 + .5, h);
+        c.moveTo(x1 - .5, 0); c.lineTo(x1 - .5, h);
+        c.stroke();
+      }
     }
     // marks
     for (const m of s.marks.concat(s.transient ? [s.transient] : [])) {

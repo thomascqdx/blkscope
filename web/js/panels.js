@@ -261,27 +261,91 @@ IOT.panels = (function () {
     { k: 'share', label: '占比', num: 1 },
   ];
 
+  const CTR_NAMES = { read: '读带宽', write: '写带宽', iops: 'IOPS',
+                      ind: '在途深度', qdep: '排队深度' };
+  const CTR_SUM_COLS = [
+    { k: 'name', label: '计数器' },
+    { k: 'avg', label: '平均', num: 1 },
+    { k: 'peak', label: '峰值 (100µs 桶)', num: 1 },
+  ];
+
   function areaDetail(host, area) {
     const D = IOT.data.D;
-    const S = IOT.stats(area.t0, area.t1, { inclLoop: D.inclLoop });
+    const S = IOT.stats(area.t0, area.t1,
+                        { inclLoop: D.inclLoop, tracks: area.tracks });
     const span = Math.max(1, S.w1 - S.w0);
-    table(host, [
-      ['选区范围', `${U.fmtNsPrec(area.t0)} ~ ${U.fmtNsPrec(area.t1)}`],
-      ['时长', U.fmtNs(area.t1 - area.t0)],
-      ['覆盖轨道', area.rows ? String(area.rows.size) : '全部'],
-      ['请求数', String(S.n)],
-      ['总量', fmtB(S.total)],
-      ['读', fmtB(S.read)],
-      ['写', fmtB(S.write)],
-      ['其他', fmtB(S.other)],
-      ['读速度', fmtRateMBs(S.read, span)],
-      ['写速度', fmtRateMBs(S.write, span)],
-      ['总速度', fmtRateMBs(S.total, span)],
-    ]);
-    const note = U.el('div', 'winnote', host);
-    note.textContent = (D.inclLoop ? '含 loop 设备' : '仅 disk 设备') +
-      ' · 字节按 issue→complete 与选区重叠比例分摊；速度 = 字节 / 选区时长';
+    const M = IOT.tracks.allLeaves().length;
+    const N = IOT.tracks.sel.count();
 
+    // track filter toolbar: 轨道：全部 M 条 / 已选 N / M 条 + ops
+    const tb = U.el('div', 'subsel', host);
+    const lab = U.el('span', 'trklabel', tb);
+    lab.textContent = area.tracks == null ? `轨道：全部 ${M} 条`
+      : `轨道：已选 ${N} / ${M} 条`;
+    for (const [label, fn] of [['全选', () => IOT.tracks.sel.selectAll()],
+                               ['反选', () => IOT.tracks.sel.invert()],
+                               ['清空', () => IOT.tracks.sel.clear()]]) {
+      const b = U.el('div', 'subtab', tb);
+      b.textContent = label;
+      b.addEventListener('mousedown', () => {
+        fn(); showSelection(); IOT.requestRender();
+      });
+    }
+
+    if (S.filtered && S.ioTracks === 0) {
+      const d = U.el('div', 'winnote', host);
+      d.style.color = '#777';
+      d.textContent = '未选中 IO 轨道（请求 / D 状态统计为空）';
+    } else {
+      table(host, [
+        ['选区范围', `${U.fmtNsPrec(area.t0)} ~ ${U.fmtNsPrec(area.t1)}`],
+        ['时长', U.fmtNs(area.t1 - area.t0)],
+        ['轨道', area.tracks == null ? '全部' : `已选 ${N} 条`],
+        ['请求数', String(S.n)],
+        ['总量', fmtB(S.total)],
+        ['读', fmtB(S.read)],
+        ['写', fmtB(S.write)],
+        ['其他', fmtB(S.other)],
+        ['读速度', fmtRateMBs(S.read, span)],
+        ['写速度', fmtRateMBs(S.write, span)],
+        ['总速度', fmtRateMBs(S.total, span)],
+        ['D 状态时长', S.d ? U.fmtNs(S.d) : '-'],
+      ]);
+      const note = U.el('div', 'winnote', host);
+      note.textContent = (D.inclLoop ? '含 loop 设备' : '仅 disk 设备') +
+        ' · 字节按 issue→complete 与选区重叠比例分摊；' +
+        '速度 = 字节 / 选区时长' +
+        (S.filtered ? ' · 仅统计勾选轨道' : '');
+      areaTopN(host, S, span);
+    }
+
+    // counter summary: global-scope counters, shown for the selected
+    // ctr tracks (unfiltered selection = all five); they summarize the
+    // window but never filter it
+    const ctrSel = IOT.data.COUNTER_DEFS.filter(m =>
+      area.tracks == null || area.tracks.has('ctr:' + m));
+    if (ctrSel.length) {
+      U.el('div', 'topname', host).textContent = '计数器（选区内）';
+      const CS = IOT.statsMod.counterSummary(area.t0, area.t1,
+                                             D.inclLoop);
+      sTable(host, CTR_SUM_COLS, ctrSel.map(m => {
+        const isDepth = m === 'ind' || m === 'qdep';
+        const fmt = isDepth ? v => v.toFixed(1)
+          : m === 'iops' ? v => U.fmtIops(v) : v => U.fmtRate(v);
+        return { vals: { name: CTR_NAMES[m], avg: fmt(CS[m].avg),
+                         peak: isDepth ? CS[m].peak.toFixed(0)
+                                       : fmt(CS[m].peak) } };
+      }), null);
+      const cn = U.el('div', 'winnote', host);
+      cn.textContent = '计数器为全局口径' +
+        (D.inclLoop ? '（含 loop）' : '（仅 disk）') +
+        '，不受轨道勾选影响';
+    }
+  }
+
+  // 选区摘要下方的两个 Top N 榜单 (进程|线程 × Top 5|10|20)
+  function areaTopN(host, S, span) {
+    const D = IOT.data.D;
     // controls: [进程|线程] [Top 5|10|20]
     const ctl = U.el('div', 'subsel', host);
     const mkSub = (label, on, fn) => {
@@ -345,13 +409,21 @@ IOT.panels = (function () {
     return [0, D.dur];
   }
 
+  // track filter handed to every stats call: the area's selected leaf
+  // keys (null = all tracks = unfiltered; no area -> null)
+  const areaTracks = () =>
+    IOT.state.area ? (IOT.state.area.tracks || null) : null;
+
   function winNote(host) {
     const D = IOT.data.D;
     const note = U.el('div', 'winnote', host);
     if (IOT.state.area) {
-      note.textContent = `窗口: ${U.fmtNsPrec(IOT.state.area.t0)} ~ ` +
-        `${U.fmtNsPrec(IOT.state.area.t1)}` +
-        (D.inclLoop ? ' · 含 loop 设备' : ' · 仅 disk 设备');
+      const A = IOT.state.area;
+      note.textContent = `窗口: ${U.fmtNsPrec(A.t0)} ~ ` +
+        `${U.fmtNsPrec(A.t1)}` +
+        (D.inclLoop ? ' · 含 loop 设备' : ' · 仅 disk 设备') +
+        (A.tracks == null ? ' · 轨道: 全部'
+                          : ` · 已选 ${A.tracks.size} 条轨道`);
     } else {
       note.textContent = '未框选，统计全 trace' +
         (D.inclLoop ? ' · 含 loop 设备' : ' · 仅 disk 设备');
@@ -513,7 +585,7 @@ IOT.panels = (function () {
       b.addEventListener('mousedown', () => { areaView = id; refresh(); });
     }
     const S = IOT.stats(statsWindow()[0], statsWindow()[1],
-                        { inclLoop: D.inclLoop });
+                        { inclLoop: D.inclLoop, tracks: areaTracks() });
     const span = Math.max(1, S.w1 - S.w0);
 
     if (areaView === 'proc' || areaView === 'thr') {
@@ -633,7 +705,7 @@ IOT.panels = (function () {
       b.addEventListener('mousedown', () => { latCat = id; refresh(); });
     }
     const S = IOT.stats(statsWindow()[0], statsWindow()[1],
-                        { inclLoop: D.inclLoop });
+                        { inclLoop: D.inclLoop, tracks: areaTracks() });
     const q = [], s = [], t = [];
     for (const e of S.latency) {
       if (latCat !== 'all' && e.cat !== CAT_IDX[latCat]) continue;
@@ -705,7 +777,7 @@ IOT.panels = (function () {
     const D = IOT.data.D, R = D.req;
     winNote(host);
     const S = IOT.stats(statsWindow()[0], statsWindow()[1],
-                        { inclLoop: D.inclLoop });
+                        { inclLoop: D.inclLoop, tracks: areaTracks() });
     const rows = [];
     const sorted = S.slow.slice()
       .sort((a, b) => b.total - a.total).slice(0, 500);
@@ -756,7 +828,8 @@ IOT.panels = (function () {
   function renderKey(host) {
     winNote(host);
     const S = IOT.stats(statsWindow()[0], statsWindow()[1],
-                        { inclLoop: IOT.data.D.inclLoop });
+                        { inclLoop: IOT.data.D.inclLoop,
+                          tracks: areaTracks() });
     const st = sortSt.key;
     const list = S.keyThreads.slice();
     list.sort((a, b) => (a[st.key] - b[st.key]) * st.dir);
@@ -849,7 +922,8 @@ IOT.panels = (function () {
     ['Ctrl + 滚轮', '以鼠标为中心缩放'],
     ['滚轮', '纵向滚动；Shift+滚轮 / 触控板横滑 = 横向平移'],
     ['单击', '选中条目（空白处清除）'],
-    ['拖动', '区域选择（时间 × 轨道）；刻度尺上拖动 = 全部轨道'],
+    ['拖动', '区域选择（时间 × 轨道），统计只计入覆盖的轨道；刻度尺上拖动 = 全部轨道'],
+    ['轨道复选框', '有选区时轨道名前出现复选框，勾选增减统计轨道；「当前选择」里可全选 / 反选 / 清空'],
     ['Shift + 拖动', '平移'],
     ['F', '缩放到当前选中条目或区域'],
     ['Esc', '取消选择 / 关闭帮助'],

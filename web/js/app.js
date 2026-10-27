@@ -3,7 +3,7 @@
 IOT.app = (function () {
   IOT.state = {
     sel: null,            // {type,id,row,t?}
-    area: null,           // {t0,t1,rows:Set|null}
+    area: null,           // {t0,t1,tracks:Set<leaf key>|null(=全部轨道)}
     marks: [],            // persistent marks {t0,t1,persistent}
     transient: null,      // transient mark
     scrollTop: 0,

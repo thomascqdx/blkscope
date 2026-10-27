@@ -12,6 +12,39 @@ IOT.tracks = (function () {
   const H = { ctr: 28, lane: 10, thead: 16, dstate: 16, treq: 16,
               files: 16, group: 22, subgroup: 18 };
 
+  // ---- leaf track keys (area-selection track filter, design 6) ------
+  // ctr:<metric> | lane:<di>:<slot> | qlane:<di>:<slot> | treq:<utid>
+  // (ONE key per thread covering all its IO 请求 sub-rows) |
+  // dstate:<utid> | files:<utid> — stable across expand/collapse.
+  const CTR_LEAVES = ['read', 'write', 'iops', 'ind', 'qdep']
+    .map(m => 'ctr:' + m);
+
+  function devLeaves(di) {
+    const D = IOT.data.D, L = [];
+    const q = D.devQueue ? D.devQueue[di] : null;
+    if (q) for (let s = 0; s < q.length; s++) L.push(`qlane:${di}:${s}`);
+    for (let s = 0; s < D.devLanes[di].length; s++)
+      L.push(`lane:${di}:${s}`);
+    return L;
+  }
+
+  function devQLeaves(di) {
+    const D = IOT.data.D, L = [];
+    const q = D.devQueue ? D.devQueue[di] : null;
+    if (q) for (let s = 0; s < q.length; s++) L.push(`qlane:${di}:${s}`);
+    return L;
+  }
+
+  // exactly the leaf rows mkRows creates for this thread
+  function threadLeaves(utid) {
+    const D = IOT.data.D, L = [];
+    if ((D.thrD.get(utid) || []).length) L.push('dstate:' + utid);
+    const e = D.thrReqs.get(utid);
+    if (e && e.sub.length) L.push('treq:' + utid);
+    if ((D.thrBatches.get(utid) || []).length) L.push('files:' + utid);
+    return L;
+  }
+
   function row(id, type, h, label, data) {
     return Object.assign({ id, type, h, label, y0: 0 }, data || {});
   }
@@ -28,6 +61,7 @@ IOT.tracks = (function () {
     return {
       id: 'dev' + d.dev, label: devLabel(d, lanes),
       expanded, kind: 'dev', di,
+      leaves() { return this._lv || (this._lv = devLeaves(this.di)); },
       mkRows() {
         const rr = [];
         const q = D.devQueue ? D.devQueue[di] : null;
@@ -57,10 +91,12 @@ IOT.tracks = (function () {
     const D = IOT.data.D;
     T.groups = [];
     T.byId = new Map();
+    _all = null;
 
     // 1) overview group
     T.groups.push({
       id: 'ov', label: '概览', expanded: true, kind: 'ctr',
+      leaves() { return CTR_LEAVES; },
       mkRows() {
         return [
           row('ctr_read', 'ctr', H.ctr, '读 MB/s', { metric: 'read' }),
@@ -94,6 +130,10 @@ IOT.tracks = (function () {
         label: `loop / 其他设备 (${others.length})`,
         expanded: false,
         subs,
+        leaves() {
+          return this._lv ||
+            (this._lv = this.subs.flatMap(s => s.leaves()));
+        },
         mkRows() {
           const rr = [];
           for (const sg of subs) {
@@ -111,6 +151,19 @@ IOT.tracks = (function () {
       T.groups.push({
         id: 'proc' + pi, label: p.name + (p.pid >= 0 ? ` (${p.pid})` : ''),
         expanded: false, kind: 'proc', pi,
+        leaves() {
+          if (this._lv) return this._lv;
+          const L = [];
+          for (const th of p.threads) {
+            const reqs = IOT.data.D.thrReqs.get(th.utid);
+            const dsegs = IOT.data.D.thrD.get(th.utid) || [];
+            const bts = IOT.data.D.thrBatches.get(th.utid) || [];
+            if (!((reqs && reqs.sub.length) || dsegs.length || bts.length))
+              continue;
+            L.push(...threadLeaves(th.utid));
+          }
+          return this._lv = L;
+        },
         mkRows() {
           const rr = [];
           for (const th of p.threads) {
@@ -128,7 +181,8 @@ IOT.tracks = (function () {
               reqs.sub.forEach((ids, si) => rr.push(row(
                 this.id + '_r' + th.utid + '_' + si, 'treq', H.treq,
                 si === 0 ? `IO 请求 (${reqs.ids.length})` : '',
-                { utid: th.utid, ids, overflow: reqs.ovIdx === si })));
+                { utid: th.utid, ids, si,
+                  overflow: reqs.ovIdx === si })));
             }
             if (bts.length)
               rr.push(row(this.id + '_f' + th.utid, 'files', H.files,
@@ -196,5 +250,102 @@ IOT.tracks = (function () {
     return null;
   }
 
-  return { T, H, build, toggle, setExpanded, relayout, rowAt };
+  // ---- track selection ----------------------------------------------
+  function rowKey(r) {
+    switch (r.type) {
+      case 'ctr': return 'ctr:' + r.metric;
+      case 'lane': return `lane:${r.di}:${r.slot}`;
+      case 'qlane': return `qlane:${r.di}:${r.slot}`;
+      case 'treq': return 'treq:' + r.utid;   // one key covers all sub-rows
+      case 'dstate': return 'dstate:' + r.utid;
+      case 'files': return 'files:' + r.utid;
+      default: return null;                 // 'empty' rows have no leaf
+    }
+  }
+
+  // all leaves this row stands for (independent of expansion)
+  function rowAllLeaves(r) {
+    switch (r.type) {
+      case 'group': return r.g.leaves ? r.g.leaves() : [];
+      case 'subgroup': return r.sg.leaves();
+      case 'qgroup': return devQLeaves(r.di);
+      case 'thead': return threadLeaves(r.utid);
+      default: {
+        const k = rowKey(r);
+        return k ? [k] : [];
+      }
+    }
+  }
+
+  // leaves a canvas drag over this row selects: the header row of an
+  // EXPANDED group/subgroup/qgroup contributes nothing (its visible
+  // children decide); collapsed headers contribute all their leaves
+  function rowDragLeaves(r) {
+    if ((r.type === 'group' && r.g.expanded) ||
+        (r.type === 'subgroup' && r.sg.expanded) ||
+        (r.type === 'qgroup' && r.qExp)) return [];
+    return rowAllLeaves(r);
+  }
+
+  let _all = null;                        // cached union of all leaves
+  function allLeaves() {
+    if (!_all) {
+      _all = [];
+      for (const g of T.groups)
+        for (const k of g.leaves()) _all.push(k);
+    }
+    return _all;
+  }
+
+  // operations on IOT.state.area.tracks (Set<key> | null; null = all
+  // tracks = no filter). Never mutate a Set in place — identity change
+  // is the change signal; after every op a Set covering all leaves
+  // normalizes back to null.
+  const sel = {
+    rowState(r) {                          // 0 none / 1 partial / 2 all
+      const A = IOT.state && IOT.state.area;
+      if (!A || A.tracks == null) return 2;
+      const L = rowAllLeaves(r);
+      if (!L.length) return 0;
+      let n = 0;
+      for (const k of L) if (A.tracks.has(k)) n++;
+      return n === 0 ? 0 : n === L.length ? 2 : 1;
+    },
+    set(t) {
+      const A = IOT.state && IOT.state.area;
+      if (!A) return;
+      A.tracks = (t == null || t.size === allLeaves().length) ? null : t;
+    },
+    toggleRow(r) {
+      const A = IOT.state && IOT.state.area;
+      if (!A) return;
+      const t = A.tracks == null ? new Set(allLeaves())
+                                 : new Set(A.tracks);
+      if (sel.rowState(r) === 2)
+        for (const k of rowAllLeaves(r)) t.delete(k);
+      else
+        for (const k of rowAllLeaves(r)) t.add(k);
+      sel.set(t);
+    },
+    selectAll() {
+      const A = IOT.state && IOT.state.area;
+      if (A) A.tracks = null;
+    },
+    invert() {
+      const A = IOT.state && IOT.state.area;
+      if (!A) return;
+      // null (all) -> none; hidden leaves in collapsed groups flip too
+      sel.set(A.tracks == null ? new Set()
+        : new Set(allLeaves().filter(k => !A.tracks.has(k))));
+    },
+    clear() { sel.set(new Set()); },
+    count() {
+      const A = IOT.state && IOT.state.area;
+      if (!A) return 0;
+      return A.tracks == null ? allLeaves().length : A.tracks.size;
+    },
+  };
+
+  return { T, H, build, toggle, setExpanded, relayout, rowAt,
+           allLeaves, rowAllLeaves, rowDragLeaves, sel };
 })();
