@@ -36,6 +36,13 @@ class _Strings:
         return [self.intern(v) for v in series]
 
 
+def _trace_start_abs(trace_start, t0) -> int:
+    """Perfetto UI's time origin (trace_bounds.start_ts); falls back to t0
+    when the trace has no bounds row or it lies after the ftrace window."""
+    ts = int(trace_start or 0)
+    return ts if 0 < ts <= t0 else t0
+
+
 def _ints(series, t0: int = 0, missing=-1) -> list:
     """int64 column with -1 sentinel; optionally subtract t0 (ns times)."""
     s = pd.to_numeric(series, errors="coerce")
@@ -138,6 +145,8 @@ def build_payload(m, name: str, source: str) -> dict:
             "name": name,
             "source": source,
             "t0_abs": int(t0),
+            "trace_start_abs": _trace_start_abs(
+                getattr(m, "trace_start", 0), int(t0)),
             "dur": int(m.t_max - t0),
             "device": {k: (int(v) if isinstance(v, (int, np.integer)) or
                            (isinstance(v, float) and float(v).is_integer())

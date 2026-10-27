@@ -54,6 +54,10 @@ def test_systrace_sched_only_degrades(tmp_path):
     p = payload_of(html)
     assert len(p["req"]["dev"]) == 0
     assert any(q["code"] == "no_block_events" for q in p["quality"])
+    # Perfetto time origin: present, integral, never after the window start
+    meta = p["meta"]
+    assert isinstance(meta["trace_start_abs"], int)
+    assert meta["trace_start_abs"] <= meta["t0_abs"]
 
 
 def test_not_a_trace_fails_cleanly(tmp_path):

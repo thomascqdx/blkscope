@@ -35,6 +35,7 @@ IOT.data = (function () {
     const P = D.payload;
     D.strs = P.strs;
     D.meta = P.meta;
+    IOT.util.initTimeBase(P.meta);
     D.dur = P.meta.dur;                // window duration (ns), t0 == 0
     D.t1 = D.dur;
     D.quality = P.quality || [];

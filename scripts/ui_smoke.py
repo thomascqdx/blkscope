@@ -240,7 +240,8 @@ def main() -> int:
             # overlays must open/close without errors on an empty or
             # degraded payload too (design 5.6)
             for sel, ov in (("#legendbtn", "legendov"),
-                            ("#manualbtn", "manualov")):
+                            ("#manualbtn", "manualov"),
+                            ("#gotobtn", "gotoov")):
                 page.locator(sel).click()
                 page.wait_for_timeout(150)
                 assert page.evaluate(
@@ -1324,6 +1325,180 @@ def main() -> int:
         assert not fmism, \
             "filtered stats cross-check failed: " + "; ".join(fmism)
         log("filtered stats cross-check: OK")
+
+        # ---- time base (Perfetto alignment) + G 定位 ---------------------
+        meta = payload["meta"]
+        t0_abs = int(meta["t0_abs"])
+        ts_abs = int(meta.get("trace_start_abs", t0_abs))
+        off = t0_abs - ts_abs                # shift: window-rel -> Perfetto ns
+
+        def timecode(ns):                    # Perfetto [-][Nd]HH:MM:SS.mmm uuu nnn
+            ns = int(round(ns))
+            neg = ns < 0
+            ns = abs(ns)
+            s, r = divmod(ns, 10**9)
+            d, s = divmod(s, 86400)
+            hh, s = divmod(s, 3600)
+            mm, ss = divmod(s, 60)
+            return (("-" if neg else "") + (f"{d}d" if d else "") +
+                    f"{hh:02d}:{mm:02d}:{ss:02d}." +
+                    f"{r // 10**6:03d} {r // 10**3 % 1000:03d} "
+                    f"{r % 10**3:03d}")
+
+        assert page.evaluate("IOT.util.timeMode()") == "perfetto", \
+            "default time base is not perfetto"
+        for t in (0, 1298560077, meta["dur"]):
+            exp, got = timecode(t + off), page.evaluate(f"IOT.util.fmtT({t})")
+            assert got == exp, f"fmtT({t}): {got!r} != {exp!r}"
+        log("fmtT timecode vs python: OK")
+
+        # parseT round-trips: plain spaces, U+2009 thin spaces, U+202F
+        r = page.evaluate("""(() => { const U = IOT.util;
+          const f = U.fmtT(1298560077);
+          return { f, a: U.parseT(f),
+                   b: U.parseT(f.replace(/ /g, '\\u2009')),
+                   c: U.parseT(f.replace(/ /g, '\\u202f')) }; })()""")
+        assert r["a"].get("t") == 1298560077, r
+        assert r["b"].get("t") == 1298560077, r
+        assert r["c"].get("t") == 1298560077, r
+        # raw integers (with / without thousands commas) are absolute ns
+        abs_v = t0_abs + 1234567890
+        r = page.evaluate(
+            f"[IOT.util.parseT('{abs_v}'), IOT.util.parseT('{abs_v:,}')]")
+        assert r[0].get("t") == 1234567890 and r[1].get("t") == 1234567890, r
+        # '1.5s' is relative to the CURRENT mode's origin
+        for mode, expect in (("perfetto", 1500000000 - off),
+                             ("raw", 1500000000 - t0_abs),
+                             ("window", 1500000000)):
+            page.evaluate(f"IOT.util.setTimeMode('{mode}')")
+            got = page.evaluate("IOT.util.parseT('1.5s')")
+            assert got.get("t") == expect, (mode, got, expect)
+        page.evaluate("IOT.util.setTimeMode('perfetto')")
+        log("parseT round-trips: OK")
+
+        # known-good anchor on the startup sample (Perfetto UI reference)
+        if t0_abs == 53200331176169 and ts_abs == 53111977182087:
+            r = page.evaluate(
+                "[IOT.util.parseT('00:01:29.652 554 159'),"
+                " IOT.util.parseT('53201629736246'),"
+                " IOT.util.parseT('00:01:32.130 601 467')]")
+            assert r[0].get("t") == 1298560077, r[0]
+            assert r[1].get("t") == 1298560077, r[1]
+            assert r[2].get("t") == 3776607385, r[2]
+            log("sample parseT anchors (launchingActivity): OK")
+
+        # G opens the dialog; shortcut letters typed into inputs are inert
+        page.evaluate("IOT.ts.init(IOT.data.D.dur); IOT.requestRender()")
+        page.keyboard.press("g")
+        page.wait_for_timeout(150)
+        assert page.evaluate(
+            "document.getElementById('gotoov').classList.contains('open')"), \
+            "goto dialog did not open on G"
+        page.locator("#goto_t0").click()
+        v_before = page.evaluate("[IOT.ts.V.v0, IOT.ts.V.v1]")
+        page.keyboard.press("w")
+        page.wait_for_timeout(150)
+        assert page.evaluate("[IOT.ts.V.v0, IOT.ts.V.v1]") == v_before, \
+            "W inside goto input panned the view"
+        page.evaluate("document.getElementById('goto_t0').value = ''")
+
+        # range + name -> area set, zoomed, tab switched, named mark pushed
+        s_abs, e_abs = t0_abs + 5_000_000_000, t0_abs + 8_000_000_000
+        page.locator("#goto_t0").fill(str(s_abs))
+        page.locator("#goto_t1").fill(str(e_abs))
+        page.locator("#goto_name").fill("冒烟区间")
+        page.keyboard.press("Enter")
+        page.wait_for_timeout(150)
+        area = page.evaluate(
+            "IOT.state.area && {t0: IOT.state.area.t0, t1: IOT.state.area.t1}")
+        assert area and area["t0"] == 5e9 and area["t1"] == 8e9, area
+        active = page.evaluate(
+            "document.querySelector('#tabs .tab.active').textContent")
+        assert "区域统计" in active, f"goto did not activate 区域统计: {active}"
+        marks = page.evaluate("IOT.state.marks")
+        assert any(m.get("label") == "冒烟区间" and m["t0"] == 5e9
+                   and m["t1"] == 8e9 for m in marks), marks
+        shot("35_goto_named_range")
+
+        # point + name via 添加标记 -> persistent mark
+        page.locator("#goto_t1").fill("")
+        page.locator("#goto_t0").fill(str(t0_abs + 2_000_000_000))
+        page.locator("#goto_name").fill("单点标记")
+        page.locator("#goto_mark").click()
+        page.wait_for_timeout(120)
+        marks = page.evaluate("IOT.state.marks")
+        assert any(m.get("label") == "单点标记" and m["t0"] == 2e9
+                   for m in marks), marks
+
+        # entirely out-of-window input -> error, nothing added
+        nmark = len(marks)
+        page.locator("#goto_t0").fill("1")
+        page.locator("#goto_name").fill("")
+        page.locator("#goto_mark").click()
+        page.wait_for_timeout(120)
+        errt = page.evaluate(
+            "document.getElementById('goto_err').textContent")
+        assert "ftrace" in errt, f"missing out-of-window error: {errt!r}"
+        assert len(page.evaluate("IOT.state.marks")) == nmark, \
+            "mark added for out-of-window input"
+
+        # end < start -> error
+        page.locator("#goto_t0").fill(str(e_abs))
+        page.locator("#goto_t1").fill(str(s_abs))
+        page.locator("#goto_apply").click()
+        page.wait_for_timeout(100)
+        assert "终点早于起点" in page.evaluate(
+            "document.getElementById('goto_err').textContent"), \
+            "missing end<start error"
+        # mark list row: 选区 button re-applies the stored range
+        page.locator("#goto_t0").fill("")
+        page.locator("#goto_t1").fill("")
+        page.locator("#goto_marks .gm button", has_text="选区").first.click()
+        page.wait_for_timeout(120)
+        area = page.evaluate(
+            "IOT.state.area && {t0: IOT.state.area.t0, t1: IOT.state.area.t1}")
+        assert area and area["t0"] == 5e9 and area["t1"] == 8e9, area
+        assert not page.evaluate(
+            "document.getElementById('gotoov').classList.contains('open')"), \
+            "选区 button should close the dialog"
+
+        # reopen + Esc inside a focused input closes the dialog
+        page.keyboard.press("g")
+        page.wait_for_timeout(120)
+        assert page.evaluate(
+            "document.getElementById('gotoov').classList.contains('open')")
+        page.keyboard.press("Escape")       # focus is in #goto_t0
+        page.wait_for_timeout(80)
+        assert not page.evaluate(
+            "document.getElementById('gotoov').classList.contains('open')"), \
+            "Esc inside goto input did not close it"
+
+        # tbase cycles perfetto -> raw -> window -> perfetto; panel text and
+        # ruler labels follow without console errors
+        assert "Perfetto" in page.evaluate(
+            "document.getElementById('tbase').textContent")
+        page.locator("#tbase").click()
+        page.wait_for_timeout(150)
+        assert "原始" in page.evaluate(
+            "document.getElementById('tbase').textContent")
+        click_tab("当前选择")
+        txt = page.evaluate(
+            "document.getElementById('panelbody').innerText")
+        assert str(s_abs) in txt and str(e_abs) in txt, \
+            "raw-mode 选区范围 missing absolute ns"
+        shot("36_tbase_raw")
+        page.locator("#tbase").click()
+        page.wait_for_timeout(120)
+        assert "窗口相对" in page.evaluate(
+            "document.getElementById('tbase').textContent")
+        txt = page.evaluate(
+            "document.getElementById('panelbody').innerText")
+        assert "5.000000 s" in txt, f"window-mode 选区范围 wrong: {txt[:200]!r}"
+        page.locator("#tbase").click()
+        page.wait_for_timeout(120)
+        assert "Perfetto" in page.evaluate(
+            "document.getElementById('tbase').textContent")
+        log("time base toggle: OK")
 
         browser.close()
 

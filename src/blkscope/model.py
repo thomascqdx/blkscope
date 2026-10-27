@@ -56,6 +56,7 @@ class Model:
     threads: pd.DataFrame = field(default_factory=pd.DataFrame)
     t_min: int = 0
     t_max: int = 0
+    trace_start: int = 0
 
 
 # ---------------------------------------------------------------- 3.3 rwbs
@@ -882,6 +883,7 @@ def build_model(ex) -> Model:
     m.device, m.stats = ex.device, ex.stats
     m.threads = ex.threads
     m.t_min, m.t_max = ex.t_min, ex.t_max
+    m.trace_start = getattr(ex, "trace_start", 0)
 
     req, counters = pair_requests(ex.rq_insert, ex.rq_issue, ex.rq_complete)
     m.counters = counters

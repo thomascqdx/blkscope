@@ -35,6 +35,7 @@ IOT.manual = (function () {
       // overlays are mutually exclusive (design 5.6)
       if (IOT.panels && IOT.panels.toggleHelp) IOT.panels.toggleHelp(false);
       if (IOT.legend && IOT.legend.toggle) IOT.legend.toggle(false);
+      if (IOT.input && IOT.input.toggleGoto) IOT.input.toggleGoto(false);
       if (!tocBuilt) buildToc();
     }
     ov.classList.toggle('open', open);

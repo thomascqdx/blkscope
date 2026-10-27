@@ -96,6 +96,7 @@ class Extracted:
     stats: dict = field(default_factory=dict)
     t_min: int = 0  # valid window: [t_min, t_max] absolute ns
     t_max: int = 0
+    trace_start: int = 0  # trace_bounds.start_ts (Perfetto UI time origin)
 
 
 def _query(tp, sql: str) -> pd.DataFrame:
@@ -181,4 +182,8 @@ def extract_all(tp) -> Extracted:
     if not bounds.empty and not pd.isna(bounds.mn.iloc[0]):
         out.t_min = int(bounds.mn.iloc[0])
         out.t_max = int(bounds.mx.iloc[0])
+
+    tb = _query(tp, "select start_ts from trace_bounds")
+    if not tb.empty and not pd.isna(tb.start_ts.iloc[0]):
+        out.trace_start = int(tb.start_ts.iloc[0])
     return out

@@ -109,11 +109,11 @@ IOT.panels = (function () {
       ['提交线程', ti != null ?
         `${D.strs[D.threads.name[ti]]} (${D.threads.tid[ti]}) · ` +
         procName(D, D.threads.upid[ti]) : `utid ${R.utid[id]}`],
-      ['t_make', U.fmtNsPrec(R.t_make[id])],
-      ['t_insert', U.fmtNsPrec(R.t_ins[id])],
-      ['t_issue_first', U.fmtNsPrec(R.t_iss0[id])],
-      ['t_issue', U.fmtNsPrec(R.t_iss[id])],
-      ['t_complete', R.t_cmp[id] >= 0 ? U.fmtNsPrec(R.t_cmp[id]) : '未完成'],
+      ['t_make', U.fmtT(R.t_make[id])],
+      ['t_insert', U.fmtT(R.t_ins[id])],
+      ['t_issue_first', U.fmtT(R.t_iss0[id])],
+      ['t_issue', U.fmtT(R.t_iss[id])],
+      ['t_complete', R.t_cmp[id] >= 0 ? U.fmtT(R.t_cmp[id]) : '未完成'],
       ['make→insert', R.t_make[id] >= 0 && R.t_ins[id] >= 0 ?
         U.fmtNs(R.t_ins[id] - R.t_make[id]) : '-'],
       ['insert→issue', R.t_ins[id] >= 0 && R.t_iss0[id] >= 0 ?
@@ -178,7 +178,7 @@ IOT.panels = (function () {
       ['线程', ti != null ?
         `${D.strs[D.threads.name[ti]]} (${D.threads.tid[ti]}) · ` +
         procName(D, D.threads.upid[ti]) : `utid ${S.utid[id]}`],
-      ['开始', U.fmtNsPrec(S.ts[id])],
+      ['开始', U.fmtT(S.ts[id])],
       ['时长', U.fmtNs(S.dur[id])],
       ['block function', D.strs[S.fn[id]] || '(未知)'],
       ['符号化', fnOk ? '是' : 'caller#id（未解析，见质量提示）'],
@@ -220,8 +220,8 @@ IOT.panels = (function () {
       ['批次', '#' + id],
       ['文件', `${nm}${hint ? ' · ' + hint : ''}` +
         (fi >= 0 && D.files.meta[fi] ? '（元数据）' : '')],
-      ['开始', U.fmtNsPrec(B.ts[id])],
-      ['结束', U.fmtNsPrec(B.end[id])],
+      ['开始', U.fmtT(B.ts[id])],
+      ['结束', U.fmtT(B.end[id])],
       ['页范围', `+${U.fmtBytes(B.page0[id] * 4096)}，${B.pages[id]} 页`],
       ['有 pc_start', B.start[id] ? '是' : '否（无起点批次）'],
     ];
@@ -243,7 +243,7 @@ IOT.panels = (function () {
                    ind: '在途深度', qdep: '排队深度' }[sel.metric];
     table(host, [
       ['计数器', name],
-      ['时间', U.fmtNs(sel.t)],
+      ['时间', U.fmtT(sel.t)],
       ['值', isDepth ? v.toFixed(0)
         : sel.metric === 'iops' ? U.fmtIops(v) : U.fmtRate(v)],
       ['口径', IOT.data.D.inclLoop ? '含 loop 设备' : '仅 disk 设备'],
@@ -298,7 +298,8 @@ IOT.panels = (function () {
       d.textContent = '未选中 IO 轨道（请求 / D 状态统计为空）';
     } else {
       table(host, [
-        ['选区范围', `${U.fmtNsPrec(area.t0)} ~ ${U.fmtNsPrec(area.t1)}`],
+        ['选区范围', `${U.fmtT(area.t0)} ~ ${U.fmtT(area.t1)}`],
+        ['原始 ns', `${U.absNs(area.t0)} ~ ${U.absNs(area.t1)}`],
         ['时长', U.fmtNs(area.t1 - area.t0)],
         ['轨道', area.tracks == null ? '全部' : `已选 ${N} 条`],
         ['请求数', String(S.n)],
@@ -419,8 +420,8 @@ IOT.panels = (function () {
     const note = U.el('div', 'winnote', host);
     if (IOT.state.area) {
       const A = IOT.state.area;
-      note.textContent = `窗口: ${U.fmtNsPrec(A.t0)} ~ ` +
-        `${U.fmtNsPrec(A.t1)}` +
+      note.textContent = `窗口: ${U.fmtT(A.t0)} ~ ` +
+        `${U.fmtT(A.t1)}` +
         (D.inclLoop ? ' · 含 loop 设备' : ' · 仅 disk 设备') +
         (A.tracks == null ? ' · 轨道: 全部'
                           : ` · 已选 ${A.tracks.size} 条轨道`);
@@ -794,7 +795,7 @@ IOT.panels = (function () {
         : (R.fsrc[i] === 0 ? '(未关联)' : '-');
       rows.push({
         vals: {
-          ts: U.fmtNsPrec(D.tSub[i]), total: U.fmtNs(e.total),
+          ts: U.fmtT(D.tSub[i]), total: U.fmtNs(e.total),
           q: R.t_ins[i] >= 0 && R.t_iss0[i] >= 0 ?
             U.fmtNs(R.t_iss0[i] - R.t_ins[i]) : '-',
           svc: R.t_cmp[i] >= 0 ? U.fmtNs(R.t_cmp[i] - R.t_iss[i]) : '-',
@@ -930,6 +931,8 @@ IOT.panels = (function () {
     ['Ctrl + A', '选中整个 trace；在面板内按下 = 全选面板文字'],
     ['R', '把选中条目转成区域选择'],
     ['M / Shift+M', '临时标记 / 持久标记当前时间范围'],
+    ['G / 定位按钮', '按时间定位：输入起点（+可选终点/名称）设为选区、居中或添加命名标记'],
+    ['时间: …', '标题栏点击切换时间基准：Perfetto（trace 起点）/ 原始 ns / 窗口相对'],
     ['[ / ]', '跳到同一行上一条 / 下一条目'],
     ['/', '聚焦搜索框'],
     ['C', '切换配色：类别 / 优先级 / 进程 / 延迟'],
@@ -948,6 +951,7 @@ IOT.panels = (function () {
       // overlays are mutually exclusive (design 5.6)
       if (IOT.legend && IOT.legend.toggle) IOT.legend.toggle(false);
       if (IOT.manual && IOT.manual.toggle) IOT.manual.toggle(false);
+      if (IOT.input && IOT.input.toggleGoto) IOT.input.toggleGoto(false);
     }
     if (open && !ov.childElementCount) {
       const card = U.el('div', 'card', ov);

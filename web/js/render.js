@@ -685,13 +685,16 @@ IOT.render = (function () {
     const V = TS.V, ns = TS.nsPerPx();
     const step = pickStep(ns * 90);          // target ~90px between ticks
     const fmt = tickFormat(step);            // unit + decimals from step
-    const t0 = Math.floor(V.v0 / step) * step;
+    // ticks align to round values in the DISPLAYED time base: window-rel t
+    // is shifted by the current mode's origin offset first
+    const base = U.timeBaseOffset();
+    const t0 = Math.floor((V.v0 + base) / step) * step - base;
     c.font = '9px sans-serif'; c.textBaseline = 'top';
     let lastLabelX = -1e9;
     for (let t = t0; t <= V.v1; t += step) {
       const x = TS.tToPx(t);
       c.fillStyle = '#666'; c.fillRect(x + .5, h - 8, 1, 8);
-      const label = fmt(t);
+      const label = fmt(t + base);
       const lw = c.measureText(label).width;
       if (x + 3 > lastLabelX + 4) {          // skip colliding labels
         c.fillStyle = '#aaa';
@@ -708,20 +711,32 @@ IOT.render = (function () {
       c.fillStyle = PAL.sel; c.font = '9px sans-serif';
       c.fillText(U.fmtNs(s.area.t1 - s.area.t0), (x0 + x1) / 2 + 4, h - 11);
     }
-    // marks: vertical band + flag
+    // marks: vertical band + flag; range marks get a second edge at t1
+    // and a name label right of the t0 flag
     for (const m of s.marks.concat(s.transient ? [s.transient] : [])) {
       const x = TS.tToPx(m.t0);
       c.fillStyle = m.persistent ? PAL.markPersist : PAL.markTemp;
+      if (m.t1 > m.t0) {
+        const x1 = TS.tToPx(m.t1);
+        c.globalAlpha = .3;
+        c.fillRect(x, 0, Math.max(1, x1 - x), h);
+        c.globalAlpha = 1;
+        c.fillRect(x1 - .5, 0, 1, h);
+      }
       c.fillRect(x - .5, 0, 1, h);
       c.beginPath(); c.moveTo(x, 0); c.lineTo(x + 6, 4); c.lineTo(x, 8);
       c.fill();
+      if (m.label) {
+        c.font = '9px sans-serif';
+        c.fillText(m.label, x + 8, 2);
+      }
     }
     // hover time label
     if (s.hoverT != null) {
       const x = TS.tToPx(s.hoverT);
       c.fillStyle = 'rgba(255,255,255,.35)'; c.fillRect(x, 0, 1, h);
       c.fillStyle = '#fff'; c.font = '9px sans-serif';
-      c.fillText(U.fmtNs(s.hoverT), x + 4, h - 11);
+      c.fillText(U.fmtT(s.hoverT), x + 4, h - 11);
     }
   }
 
@@ -821,14 +836,24 @@ IOT.render = (function () {
         c.stroke();
       }
     }
-    // marks
+    // marks: point marks get a halo band; range marks (t1 > t0) shade the
+    // span lightly and draw a line at each edge
     for (const m of s.marks.concat(s.transient ? [s.transient] : [])) {
       const x = TS.tToPx(m.t0);
-      c.fillStyle = m.persistent ? hxRgb(PAL.markPersist, .18)
-                                 : hxRgb(PAL.markTemp, .18);
-      c.fillRect(x - 8, 0, 16, h);
-      c.fillStyle = m.persistent ? PAL.markPersist : PAL.markTemp;
-      c.fillRect(x - .5, 0, 1, h);
+      const col = m.persistent ? PAL.markPersist : PAL.markTemp;
+      if (m.t1 > m.t0) {
+        const x1 = TS.tToPx(m.t1);
+        c.fillStyle = hxRgb(col, .12);
+        c.fillRect(x, 0, Math.max(1, x1 - x), h);
+        c.fillStyle = col;
+        c.fillRect(x - .5, 0, 1, h);
+        c.fillRect(x1 - .5, 0, 1, h);
+      } else {
+        c.fillStyle = hxRgb(col, .18);
+        c.fillRect(x - 8, 0, 16, h);
+        c.fillStyle = col;
+        c.fillRect(x - .5, 0, 1, h);
+      }
     }
     // Stage-3 hooks (flow arrows etc.)
     if (IOT.overlayFns) for (const f of IOT.overlayFns) f(c, w, h);

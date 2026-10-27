@@ -81,6 +81,15 @@ IOT.input = (function () {
       () => IOT.manual.toggle());
     document.getElementById('cmode').addEventListener('click',
       () => IOT.legend.toggle());
+    updateTbase();
+    document.getElementById('tbase').addEventListener('click', () => {
+      U.cycleTimeMode();
+      updateTbase();
+      requestRender();
+      IOT.panels.showSelection();
+    });
+    document.getElementById('gotobtn').addEventListener('click',
+      () => toggleGoto());
     // backdrop click closes the modal overlays (same as help)
     document.getElementById('legendov').addEventListener('mousedown', e => {
       if (e.target.id === 'legendov') IOT.legend.toggle(false);
@@ -88,7 +97,18 @@ IOT.input = (function () {
     document.getElementById('manualov').addEventListener('mousedown', e => {
       if (e.target.id === 'manualov') IOT.manual.toggle(false);
     });
+    document.getElementById('gotoov').addEventListener('mousedown', e => {
+      if (e.target.id === 'gotoov') toggleGoto(false);
+    });
     window.addEventListener('resize', requestRender);
+  }
+
+  function updateTbase() {
+    const el = document.getElementById('tbase');
+    el.textContent = '时间: ' + U.timeModeLabel();
+    el.title = `时间基准：${U.timeModeLabel()}（点击切换）\n` +
+      `Perfetto 时间原点 = trace 起点；` +
+      `ftrace 有效窗口起点 = ${U.fmtTimecode(U.perfettoNs(0))}`;
   }
 
   // ---------------- helpers ----------------
@@ -232,7 +252,7 @@ IOT.input = (function () {
       }
       case 'ctr':
         return `${h.row.label}\n` +
-          `${U.fmtNs(h.t)}\n值 ${ctrValueText(h)}`;
+          `${U.fmtT(h.t)}\n值 ${ctrValueText(h)}`;
       default:
         return h.row ? h.row.label : '';
     }
@@ -452,12 +472,15 @@ IOT.input = (function () {
       return 'legend';
     if (document.getElementById('manualov').classList.contains('open'))
       return 'manual';
+    if (document.getElementById('gotoov').classList.contains('open'))
+      return 'goto';
     return null;
   }
   function closeOverlay(name) {
     if (name === 'help') IOT.panels.toggleHelp(false);
     else if (name === 'legend' && IOT.legend) IOT.legend.toggle(false);
     else if (name === 'manual' && IOT.manual) IOT.manual.toggle(false);
+    else if (name === 'goto') toggleGoto(false);
   }
 
   function onKeyDown(e) {
@@ -495,6 +518,7 @@ IOT.input = (function () {
       switch (e.code) {
         case 'Escape': closeOverlay(ov); break;
         case 'KeyL': if (IOT.legend) IOT.legend.toggle(); break;
+        case 'KeyG': if (ov === 'goto') toggleGoto(false); break;
         case 'KeyC':
           if (ov === 'legend') { IOT.paint.cycle(); requestRender(); }
           break;
@@ -567,6 +591,9 @@ IOT.input = (function () {
         requestRender(); break;
       case 'KeyL':
         if (IOT.legend) IOT.legend.toggle();
+        break;
+      case 'KeyG':
+        toggleGoto();
         break;
       case 'Slash':
         // '?' is Shift+/ on US layouts (and dispatched key may be '/')
@@ -647,5 +674,173 @@ IOT.input = (function () {
     requestRender();
   }
 
-  return { init, hitAt, requestRender, hideTip };
+  // ---------------- goto dialog (G / 定位) --------------------------------
+  let gotoBuilt = false;
+  function buildGoto() {
+    const ov = document.getElementById('gotoov');
+    const card = U.el('div', 'card', ov);
+    U.el('h3', '', card).textContent = '定位';
+    for (const [id, label, ph] of [
+        ['goto_t0', '起点', '必填'],
+        ['goto_t1', '终点', '可选 —— 填了即设为选区'],
+        ['goto_name', '名称', '可选 —— 用于命名标记']]) {
+      const row = U.el('div', 'grow', card);
+      const lb = U.el('label', '', row);
+      lb.textContent = label; lb.htmlFor = id;
+      const inp = U.el('input', '', row);
+      inp.id = id; inp.type = 'text'; inp.placeholder = ph;
+      inp.autocomplete = 'off'; inp.spellcheck = false;
+    }
+    const hint = U.el('div', '', card);
+    hint.id = 'goto_hint';
+    hint.textContent = '支持：Perfetto 时间码 HH:MM:SS.mmm uuu nnn（可带 ' +
+      '天数前缀与任意空格）· 绝对 ns 整数（可带千分位逗号）· 带单位数值 ' +
+      '1.5s / 200ms / 3us / 100ns 按当前时间基准解析';
+    const err = U.el('div', '', card);
+    err.id = 'goto_err';
+    const btns = U.el('div', 'gbtn', card);
+    const bApply = U.el('button', '', btns);
+    bApply.id = 'goto_apply'; bApply.textContent = '设为选区';
+    bApply.addEventListener('click', gotoApply);
+    const bMark = U.el('button', '', btns);
+    bMark.id = 'goto_mark'; bMark.textContent = '添加标记';
+    bMark.addEventListener('click', gotoAddMark);
+    const mk = U.el('div', '', card);
+    mk.id = 'goto_marks';
+    // Enter applies; Esc closes — even while an input is focused (the
+    // window-level handler skips editable targets)
+    ov.addEventListener('keydown', e => {
+      if (e.key === 'Escape') { toggleGoto(false); e.stopPropagation(); }
+      else if (e.key === 'Enter') { gotoApply(); e.preventDefault(); }
+    });
+    gotoBuilt = true;
+  }
+
+  function gotoMsg(text, isErr) {
+    const e = document.getElementById('goto_err');
+    e.textContent = text || '';
+    e.classList.toggle('warn', !!text && !isErr);
+  }
+
+  function gotoParse() {
+    const v = id => document.getElementById(id).value.trim();
+    const s0 = v('goto_t0'), s1 = v('goto_t1'), nm = v('goto_name');
+    if (!s0) return { err: '请输入起点' };
+    const p0 = U.parseT(s0);
+    if (p0.err) return { err: '起点：' + p0.err };
+    let t0 = p0.t, t1 = p0.t;
+    if (s1) {
+      const p1 = U.parseT(s1);
+      if (p1.err) return { err: '终点：' + p1.err };
+      t1 = p1.t;
+      if (t1 < t0) return { err: '终点早于起点' };
+    }
+    return { t0, t1, nm, hasEnd: !!s1 };
+  }
+
+  // clamp into the ftrace window; returns {t0,t1,warn} or {err}
+  function gotoClamp(t0, t1, isPoint) {
+    const dur = D.dur;
+    const win = `${U.fmtT(0)} ~ ${U.fmtT(dur)}`;
+    if (isPoint ? (t0 < 0 || t0 > dur) : (t1 <= 0 || t0 >= dur))
+      return { err: `该时间不在 ftrace 有效窗口内（${win}）` };
+    const c0 = U.clamp(t0, 0, dur), c1 = U.clamp(t1, 0, dur);
+    return { t0: c0, t1: c1,
+             warn: (c0 !== t0 || c1 !== t1)
+               ? `超出 ftrace 有效窗口（${win}），已截断` : '' };
+  }
+
+  function gotoApply() {
+    const p = gotoParse();
+    if (p.err) { gotoMsg(p.err, true); return; }
+    const c = gotoClamp(p.t0, p.t1, !p.hasEnd);
+    if (c.err) { gotoMsg(c.err, true); return; }
+    if (p.hasEnd) {
+      IOT.state.area = { t0: c.t0, t1: c.t1, tracks: null };
+      IOT.state.sel = null;
+      TS.zoomToRange(c.t0, c.t1);          // same padding as the F key
+      IOT.panels.activate('area');
+    } else {
+      const V = TS.V, span = V.v1 - V.v0;
+      V.v0 = c.t0 - span / 2; V.v1 = c.t0 + span / 2;
+      TS.clampView();
+      IOT.state.transient = { t0: c.t0, t1: c.t0, persistent: false };
+    }
+    if (p.nm) {                            // named -> also a persistent mark
+      IOT.state.marks.push({ t0: c.t0, t1: c.t1,
+                             persistent: true, label: p.nm });
+      renderGotoMarks();
+    }
+    requestRender();
+    gotoMsg(c.warn || '', false);
+  }
+
+  function gotoAddMark() {
+    const p = gotoParse();
+    if (p.err) { gotoMsg(p.err, true); return; }
+    const c = gotoClamp(p.t0, p.t1, !p.hasEnd);
+    if (c.err) { gotoMsg(c.err, true); return; }
+    IOT.state.marks.push({ t0: c.t0, t1: c.t1,
+                           persistent: true, label: p.nm || '' });
+    renderGotoMarks();
+    requestRender();
+    gotoMsg(c.warn || '已添加标记', false);
+  }
+
+  function renderGotoMarks() {
+    const host = document.getElementById('goto_marks');
+    host.innerHTML = '';
+    const marks = IOT.state.marks;
+    if (!marks.length) {
+      const d = U.el('div', 'gm', host);
+      d.style.color = '#777';
+      d.textContent = '（暂无持久标记；Shift+M 或此处「添加标记」创建）';
+      return;
+    }
+    marks.forEach((m, i) => {
+      const row = U.el('div', 'gm', host);
+      U.el('span', 'gml', row).textContent = m.label || `标记 ${i + 1}`;
+      U.el('span', 'gmt', row).textContent = U.fmtT(m.t0) +
+        (m.t1 > m.t0 ? ` ~ ${U.fmtT(m.t1)}` : '');
+      if (m.t1 > m.t0) {
+        const b = U.el('button', '', row);
+        b.textContent = '选区';
+        b.addEventListener('click', () => {
+          IOT.state.area = { t0: m.t0, t1: m.t1, tracks: null };
+          IOT.state.sel = null;
+          TS.zoomToRange(m.t0, m.t1);
+          IOT.panels.activate('area');
+          requestRender();
+          toggleGoto(false);
+        });
+      }
+      const del = U.el('button', '', row);
+      del.textContent = '删除';
+      del.addEventListener('click', () => {
+        marks.splice(i, 1);
+        renderGotoMarks();
+        requestRender();
+      });
+    });
+  }
+
+  function toggleGoto(force) {
+    const ov = document.getElementById('gotoov');
+    const open = force !== undefined ? force
+      : !ov.classList.contains('open');
+    if (open) {                            // overlays are mutually exclusive
+      IOT.panels.toggleHelp(false);
+      if (IOT.legend && IOT.legend.toggle) IOT.legend.toggle(false);
+      if (IOT.manual && IOT.manual.toggle) IOT.manual.toggle(false);
+      if (!gotoBuilt) buildGoto();
+      renderGotoMarks();
+      gotoMsg('', false);
+      ov.classList.add('open');
+      document.getElementById('goto_t0').focus();
+    } else {
+      ov.classList.remove('open');
+    }
+  }
+
+  return { init, hitAt, requestRender, hideTip, toggleGoto };
 })();
