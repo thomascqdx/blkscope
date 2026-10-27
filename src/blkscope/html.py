@@ -1,11 +1,12 @@
 """Single-file HTML builder (design 5.1 / 5.6).
 
-web/index.html is the template; placeholders __TITLE__, /*__CSS__*/,
-/*__JS__*/, __PAYLOAD__ and <!--__MANUAL__--> are replaced with the escaped
-trace name, the manifest-ordered CSS/JS inline contents, the base64+gzip
-payload and the rendered user manual. The manual comes from the manifest's
-optional "manual" entry (a Markdown file converted by mdlite) and is
-substituted LAST so literal placeholder text inside the manual survives.
+web/index.html is the template; placeholders __TITLE__, __GENERATOR__,
+/*__CSS__*/, /*__JS__*/, __PAYLOAD__ and <!--__MANUAL__--> are replaced with
+the escaped trace name, the generator string (blkscope <version>), the
+manifest-ordered CSS/JS inline contents, the base64+gzip payload and the
+rendered user manual. The manual comes from the manifest's optional "manual"
+entry (a Markdown file converted by mdlite) and is substituted LAST so
+literal placeholder text inside the manual survives.
 web/ lookup order: BLKSCOPE_WEB env > sys._MEIPASS (PyInstaller) > repo root.
 """
 
@@ -15,6 +16,8 @@ import html as _html
 import json
 import os
 import sys
+
+from . import __version__
 
 
 def web_dir() -> str:
@@ -64,6 +67,8 @@ def render_html(payload_b64: str, name: str) -> str:
     # the manual must survive verbatim (design 5.6)
     return (tpl
             .replace("__TITLE__", _html.escape(name, quote=True))
+            .replace("__GENERATOR__",
+                     _html.escape(f"blkscope {__version__}", quote=True))
             .replace("/*__CSS__*/", css)
             .replace("/*__JS__*/", js)
             .replace("__PAYLOAD__", payload_b64)

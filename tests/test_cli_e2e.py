@@ -6,13 +6,17 @@ Skipped automatically when the binary is absent (run scripts/fetch_tp.py).
 import base64
 import gzip
 import json
+import os
 import re
+import shutil
 import subprocess
 import sys
 import zipfile
 from pathlib import Path
 
 import pytest
+
+from blkscope import __version__
 
 ROOT = Path(__file__).resolve().parents[1]
 TP = ROOT / "tools" / ("trace_processor_shell.exe" if sys.platform == "win32"
@@ -24,10 +28,13 @@ pytestmark = pytest.mark.skipif(not TP.is_file(),
 
 
 def run_cli(*args):
+    # PYTHONIOENCODING: child prints Chinese messages; keep them utf-8 so
+    # encoding="utf-8" below decodes them correctly on Windows consoles
     return subprocess.run(
         [sys.executable, "-m", "blkscope", *args],
         capture_output=True, text=True, encoding="utf-8", errors="replace",
-        cwd=ROOT, timeout=600)
+        cwd=ROOT, timeout=600,
+        env=dict(os.environ, PYTHONIOENCODING="utf-8"))
 
 
 def payload_of(html_path: Path) -> dict:
@@ -76,3 +83,28 @@ def test_multi_input_continues_and_reports(tmp_path):
     assert r.returncode == 1
     assert "1 succeeded, 1 failed" in r.stdout
     assert (tmp_path / "systrace_sched.html").is_file()
+
+
+def test_directory_input(tmp_path):
+    indir = tmp_path / "in"
+    indir.mkdir()
+    shutil.copy(FIX / "systrace_sched.trace", indir)
+    shutil.copy(FIX / "not_a_trace.txt", indir)
+    outdir = tmp_path / "out"
+    r = run_cli(str(indir), "-o", str(outdir))
+    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    html = outdir / "systrace_sched.html"
+    assert html.is_file()
+    assert "1 succeeded, 0 failed" in r.stdout
+    assert f'content="blkscope {__version__}"' in html.read_text(
+        encoding="utf-8")
+    # a dir containing only blkscope's own output resolves to zero traces
+    r2 = run_cli(str(outdir), "-o", str(tmp_path / "out2"))
+    assert r2.returncode == 1
+    assert "目录中没有 trace 文件" in r2.stderr
+
+
+def test_version_flag():
+    r = run_cli("--version")
+    assert r.returncode == 0
+    assert r.stdout.strip() == f"blkscope {__version__}"

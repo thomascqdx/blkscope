@@ -1,9 +1,10 @@
 """blkscope CLI: parse input traces -> per-trace single-file HTML.
 
-Multiple inputs are processed independently: each resolved trace (incl. every
-trace member inside a .zip) produces <outdir>/<name>.html.  Name collisions
-get a numeric suffix; a failed trace does not stop the others; the process
-exit code is 1 when any trace failed.
+Inputs may be trace files, .zip archives, or directories (scanned at the
+first level only).  Multiple inputs are processed independently: each
+resolved trace (incl. every trace member inside a .zip) produces
+<outdir>/<name>.html.  Name collisions get a numeric suffix; a failed trace
+does not stop the others; the process exit code is 1 when any trace failed.
 """
 
 from __future__ import annotations
@@ -13,6 +14,8 @@ import json
 import os
 import sys
 import time
+
+from . import __version__
 
 
 def render_html(payload_b64: str, name: str) -> str:
@@ -105,7 +108,10 @@ def main(argv=None) -> int:
         prog="blkscope",
         description="Android/Perfetto 块设备 IO trace -> 单文件 HTML 分析页")
     ap.add_argument("inputs", nargs="+",
-                    help=".zip / .trace / .pftrace / systrace 文本等")
+                    help=".zip / .trace / .pftrace / systrace 文本或目录"
+                    "（目录只扫描第一层，非 trace 文件自动跳过）")
+    ap.add_argument("-V", "--version", action="version",
+                    version=f"blkscope {__version__}")
     ap.add_argument("-o", "--outdir", default="out",
                     help="输出目录 (默认 out/)")
     ap.add_argument("--json", action="store_true",

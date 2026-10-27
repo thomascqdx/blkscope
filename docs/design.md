@@ -7,7 +7,7 @@ pyproject.toml            # 包 blkscope，入口 `blkscope = blkscope.cli:main`
 src/blkscope/
   cli.py                  # 参数解析；每个输入 Trace → 一个 HTML
   tp.py                   # 定位 trace_processor 二进制（BLKSCOPE_TP 环境变量 > tools/ > 报错并提示 scripts/fetch_tp.py）
-  loader.py               # 输入格式处理：zip 解包、格式嗅探；产出 [(trace_name, path)]
+  loader.py               # 输入格式处理：zip 解包、目录（第一层）扫描、格式嗅探；产出 [(trace_name, path)]
   extract.py              # SQL 查询 → 原始事件 DataFrame（只做取数，不做逻辑）
   model.py                # 纯函数：配对、归属、优先级、文件关联、槽位、D 状态因果、数据质量
   payload.py              # 模型 → 列式 JSON payload（字符串池化），gzip + base64

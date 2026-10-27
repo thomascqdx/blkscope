@@ -13,6 +13,11 @@
 - 不提交大文件（trace、二进制、生成的 HTML）。
 - 不修改 git config，不 force push。
 
+## 版本号（每次提交前必须检查）
+- 语义化版本 `MAJOR.MINOR.PATCH`，唯一来源是 `src/blkscope/__init__.py` 的 `__version__`（`pyproject.toml` 动态读取，不要在别处写死版本号）；`blkscope --version` 查看。
+- 升级规则：新功能 / 新需求 +MINOR（PATCH 归零）；bug 修复、小的行为调整 +PATCH；不兼容变更（命令行参数、payload 格式、输出命名不兼容）+MAJOR；纯文档 / 测试 / 重构 / 构建脚本等不影响用户可见行为的提交不升级。
+- 在实现该功能或修复的提交里同步升级版本号；同一需求拆成多次提交时只在第一次提交里升级一次。提交信息末尾注明新版本号（如 `(v0.3.0)`）。
+
 ## 架构约定
 - `src/blkscope/`：Python 解析层（trace_processor → pandas → 模型 → JSON payload），产出单 HTML。
 - `web/`：前端源码，原生 JS + Canvas，无外部依赖、无 CDN；由 Python 按清单内联成单文件 HTML。
@@ -31,6 +36,6 @@
 ## 验证
 - 单元测试：`.\.venv\Scripts\python -m pytest -q`（合成事件单测 + `tests/test_cli_e2e.py` 用 tools/ 里的真实 trace_processor 跑端到端，二进制缺失时自动跳过）。
 - 样例校验：`.\.venv\Scripts\python scripts/validate_sample.py`（加载样例约 1~2 分钟），检查配对率、总字节数、文件关联率等。
-- 生成 HTML：`.\.venv\Scripts\blkscope <zip|trace> -o out`（支持多输入与 `--open` / `--json`）。
+- 生成 HTML：`.\.venv\Scripts\blkscope <zip|trace|目录> -o out`（支持多输入、目录（只扫第一层）与 `--open` / `--json` / `--version`）。
 - 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。

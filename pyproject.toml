@@ -4,7 +4,7 @@ build-backend = "setuptools.build_meta"
 
 [project]
 name = "blkscope"
-version = "0.1.0"
+dynamic = ["version"]
 description = "Offline block-IO trace analyzer: Android/Perfetto trace -> single self-contained HTML"
 requires-python = ">=3.10"
 dependencies = [
@@ -21,6 +21,9 @@ blkscope = "blkscope.cli:main"
 
 [tool.setuptools.packages.find]
 where = ["src"]
+
+[tool.setuptools.dynamic]
+version = {attr = "blkscope.__version__"}
 
 [tool.pytest.ini_options]
 testpaths = ["tests"]

@@ -34,6 +34,9 @@ python -m venv .venv
 # 一个输入 -> out\<name>.html
 .\.venv\Scripts\blkscope samples\<xxx>.zip -o out
 
+# 目录输入：只扫描第一层；非 trace 文件自动跳过（blkscope 自己生成的 HTML / .payload.json 会被忽略）
+.\.venv\Scripts\blkscope samples -o out
+
 # 多个输入：每条 trace 一个 HTML，失败不中断，结尾打印汇总；exit code 非零表示有失败
 .\.venv\Scripts\blkscope a.zip b.trace -o out
 
@@ -42,6 +45,9 @@ python -m venv .venv
 
 # 只要数据（不生成 HTML）
 .\.venv\Scripts\blkscope a.zip -o out --json
+
+# 查看版本（-V / --version）
+.\.venv\Scripts\blkscope --version
 ```
 
 输出名冲突时自动追加数字后缀（`name_2.html`）。加载一条 200MB 的 trace

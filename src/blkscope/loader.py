@@ -1,9 +1,11 @@
 """Resolve input files into a list of (trace_name, path) to hand to extract.
 
 .zip inputs are unpacked to a temp dir; every member that sniffs as a trace
-(protobuf / gzip / systrace text / html-systrace) is kept. Non-zip inputs are
-passed through untouched. Temp dirs live for the duration of the context
-manager returned by `resolve_inputs`.
+(protobuf / gzip / systrace text / html-systrace) is kept. Directory inputs
+are scanned at the first level only: zip members and trace-sniffing files are
+kept, the rest is skipped. Non-zip file inputs are passed through untouched.
+Temp dirs live for the duration of the context manager returned by
+`resolve_inputs`.
 """
 
 from __future__ import annotations
@@ -42,6 +44,8 @@ def looks_like_trace(head: bytes) -> bool:
     """Heuristic: does this blob plausibly contain trace data?"""
     if not head:
         return False
+    if b'<meta name="generator" content="blkscope' in head:
+        return False                    # blkscope's own generated HTML
     if head.startswith(b"\x1f\x8b"):  # gzip (compressed trace)
         return True
     if any(head.startswith(m) for m in _NON_TRACE_MAGIC):
@@ -83,12 +87,44 @@ def _extract_zip(path: str, outdir: str) -> List[Tuple[str, str]]:
     ]
 
 
+def _scan_dir(path: str, stack: contextlib.ExitStack) -> List[Tuple[str, str]]:
+    """First-level dir scan -> [(trace_name, path)]; prints a summary."""
+    found: List[Tuple[str, str]] = []
+    skipped = 0
+    for name in sorted(os.listdir(path), key=str.lower):
+        full = os.path.join(path, name)
+        if not os.path.isfile(full):
+            continue                                  # no recursion
+        if name.endswith(".payload.json"):
+            skipped += 1
+            continue
+        if zipfile.is_zipfile(full):
+            tmp = stack.enter_context(
+                tempfile.TemporaryDirectory(prefix="blkscope_"))
+            found.extend(_extract_zip(full, tmp))
+            continue
+        with open(full, "rb") as f:
+            head = f.read(_SNIFF_LEN)
+        if looks_like_trace(head):
+            found.append((os.path.splitext(name)[0], full))
+        else:
+            skipped += 1
+    print(f"[{path}] 找到 {len(found)} 个 trace 输入，"
+          f"跳过 {skipped} 个非 trace 文件")
+    if not found:
+        print(f"warning: 目录中没有 trace 文件: {path}", file=sys.stderr)
+    return found
+
+
 @contextlib.contextmanager
 def resolve_inputs(paths: List[str]) -> Iterator[List[Tuple[str, str]]]:
     """Expand inputs -> [(trace_name, path)]; cleans up zip temp dirs on exit."""
     out: List[Tuple[str, str]] = []
     with contextlib.ExitStack() as stack:
         for path in paths:
+            if os.path.isdir(path):
+                out.extend(_scan_dir(path, stack))
+                continue
             if not os.path.isfile(path):
                 raise FileNotFoundError(f"input not found: {path}")
             if zipfile.is_zipfile(path):

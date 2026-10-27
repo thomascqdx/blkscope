@@ -23,10 +23,12 @@ blkscope 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTM
 ```
 
 - 一个输入：`blkscope samples\xxx.zip -o out` → `out\<trace名>.html`
+- 目录输入：`blkscope samples -o out` 只扫描第一层；非 trace 文件自动跳过（blkscope 自己生成的 HTML 与 `.payload.json` 会被忽略）
 - 多个输入：每条 trace 各产出一个 HTML，单个失败不中断，结尾打印汇总；有失败时进程 exit code 为 1
 - `.zip` 内可有多个 trace 成员，每个成员一个 HTML；非 trace 成员（图片、文档等）自动跳过
 - 输出名冲突时自动追加 `_2`、`_3` 后缀
 - `--open` 生成后用默认浏览器打开；`--json` 只输出 `<name>.payload.json`（数据，不生成 HTML）
+- `-V` / `--version` 打印版本号；版本也显示在生成 HTML 的标题栏
 
 ### 支持的输入格式
 

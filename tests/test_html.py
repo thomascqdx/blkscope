@@ -6,6 +6,7 @@ import io
 import json
 import os
 
+from blkscope import __version__
 from blkscope.html import render_html
 from blkscope.payload import encode_payload
 
@@ -21,7 +22,9 @@ def _make_web(tmp_path, manual=None):
         (web / "manual.md").write_text(manual, encoding="utf-8")
     (web / "manifest.json").write_text(json.dumps(manifest))
     (web / "index.html").write_text(
-        "<html><title>__TITLE__</title><style>/*__CSS__*/</style>"
+        "<html><title>__TITLE__</title>"
+        '<meta name="generator" content="__GENERATOR__">'
+        "<style>/*__CSS__*/</style>"
         "<script>/*__JS__*/</script>"
         "<script type='application/octet-stream' "
         "id='payload'>__PAYLOAD__</script>"
@@ -40,6 +43,8 @@ def test_render_replaces_placeholders_and_escapes(tmp_path, monkeypatch):
     out = render_html("QUJD", 'x<y>"z"')
     assert "__TITLE__" not in out and "__PAYLOAD__" not in out
     assert "/*__CSS__*/" not in out and "/*__JS__*/" not in out
+    assert "__GENERATOR__" not in out
+    assert f'content="blkscope {__version__}"' in out
     assert "x&lt;y&gt;&quot;z&quot;" in out       # title html-escaped
     assert ".a{color:red}" in out and ".b{color:blue}" in out
     assert "var A = 1" in out and "var B = 2" in out

@@ -40,6 +40,9 @@ IOT.app = (function () {
       .filter(Boolean).join(' · ');
     document.getElementById('devinfo').textContent =
       bits + (m.dur ? `  |  时长 ${IOT.util.fmtNs(m.dur)}` : '');
+    const tv = document.getElementById('toolver');
+    tv.textContent = m.tool_version ? `blkscope v${m.tool_version}` : '';
+    tv.title = m.generated ? `生成时间 ${m.generated}` : '';
   }
 
   // ---------------- test hooks ----------------

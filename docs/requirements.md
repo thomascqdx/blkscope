@@ -149,3 +149,5 @@ ino 为文件系统元数据 inode 时标为「FS 元数据」。所有关联结
 - 排队时间（insert→issue）已在线程「IO 请求」行分段显示；图例注明「调度排队 ≈ Runnable，设备服务 ≈ Running」；单击线程标题行显示该线程的排队 / 服务汇总。
 - 颜色图例：标题栏加「图例」按钮（也可按 `L` 或点击「配色: …」文字），弹出完整图例浮层：当前配色模式下哪种颜色是读、哪种是写，以及计数器、生命周期分段、角标、D 状态、热力条、标记等所有颜色/记号的含义。不常驻占用纵向空间（用户选择）。
 - 使用手册：面向组内工程师，**内嵌进每个 HTML**（标题栏「手册」按钮打开全屏浮层，带目录），同时在仓库保留 Markdown 版本 `web/manual.md`（唯一来源，生成 HTML 时转换内嵌）。
+- 目录输入：命令行输入可以是目录（可与文件混用），**只扫描第一层**、不递归子目录（用户选择）；目录内文件按名称排序，`.zip` 照常解包，其他文件按内容嗅探，非 trace 文件跳过并在终端提示跳过数量；blkscope 自己生成的 HTML（`<meta name="generator" content="blkscope …">`）和 `*.payload.json` 不当作 trace。目录中没有 trace 时给出警告，其余输入照常处理。显式给出的单个文件不做嗅探（保持原行为，解析失败时报错）。
+- 版本号：语义化版本 `MAJOR.MINOR.PATCH`，唯一来源 `src/blkscope/__init__.py` 的 `__version__`（pyproject 动态读取）；`blkscope --version` 查看；版本号同时写入生成的 HTML（payload `meta.tool_version` + 标题栏可见 + generator meta 标签）。升级规则写在 `AGENTS.md`。

@@ -3,6 +3,8 @@
 import os
 import zipfile
 
+import pytest
+
 from blkscope.loader import looks_like_trace, resolve_inputs
 
 
@@ -61,3 +63,48 @@ def test_non_zip_passthrough(tmp_path):
     p.write_bytes(_trace_bytes())
     with resolve_inputs([str(p)]) as traces:
         assert traces == [("raw", str(p))]
+
+
+_GENERATED_HTML_HEAD = (
+    b'<!DOCTYPE html><html><head><meta charset="utf-8">'
+    b'<meta name="generator" content="blkscope 0.1.0">'
+    b'perfetto systrace')
+
+
+def test_directory_input(tmp_path, capsys):
+    d = tmp_path / "in"
+    d.mkdir()
+    (d / "b.trace").write_bytes(_trace_bytes())
+    with zipfile.ZipFile(d / "a.zip", "w") as zf:
+        zf.writestr("inner.trace", _trace_bytes())
+    (d / "notes.txt").write_text("just some plain text, no markers")
+    (d / "x.payload.json").write_text("{}")
+    (d / "old.html").write_bytes(_GENERATED_HTML_HEAD)
+    sub = d / "sub"
+    sub.mkdir()
+    (sub / "c.trace").write_bytes(_trace_bytes())     # first level only
+    with resolve_inputs([str(d)]) as traces:
+        assert [n for n, _ in traces] == ["a", "b"]
+    assert ("找到 2 个 trace 输入，跳过 3 个非 trace 文件"
+            in capsys.readouterr().out)
+
+
+def test_empty_dir_mixed_with_file(tmp_path, capsys):
+    d = tmp_path / "emptydir"
+    d.mkdir()
+    (d / "notes.txt").write_text("just some plain text, no markers")
+    p = tmp_path / "raw.trace"
+    p.write_bytes(_trace_bytes())
+    with resolve_inputs([str(d), str(p)]) as traces:
+        assert traces == [("raw", str(p))]
+    assert "目录中没有 trace 文件" in capsys.readouterr().err
+
+
+def test_missing_input_raises(tmp_path):
+    with pytest.raises(FileNotFoundError):
+        with resolve_inputs([str(tmp_path / "nope")]):
+            pass
+
+
+def test_looks_like_trace_generated_html():
+    assert not looks_like_trace(_GENERATED_HTML_HEAD)
