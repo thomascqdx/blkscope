@@ -26,7 +26,8 @@ python -m venv .venv
 
 `fetch_tp.py` 复用 perfetto Python 包的二进制清单与版本，需要时可用
 `--proxy <url>`（或环境变量 `HTTPS_PROXY`）指定代理。也可以直接把
-`trace_processor_shell.exe` 放进 `tools/`，或设环境变量 `BLKSCOPE_TP` 指向它。
+`trace_processor_shell.exe` 放进 `tools/`，或设环境变量 `BLKSCOPE_TP` 指向它
+（优先级最高，对打包后的 exe 同样生效）。
 
 ## 用法
 
@@ -52,6 +53,26 @@ python -m venv .venv
 
 输出名冲突时自动追加数字后缀（`name_2.html`）。加载一条 200MB 的 trace
 大约需要 10~20 秒（期间按阶段打印进度）。
+
+## 构建 Release
+
+```powershell
+.\.venv\Scripts\python -m pip install -e .[release]    # 安装 PyInstaller
+.\.venv\Scripts\python scripts\build_release.py         # 一键构建
+```
+
+可选参数：`--skip-tests`（跳过单测）、`--allow-dirty`（允许工作区有未提交改动）、
+`--proxy <url>`（下载 trace_processor 走代理）。
+
+构建流程：检查工作区干净 → 获取/校验 trace_processor → 跑单测 → PyInstaller
+打成单文件 exe（内置 trace_processor 与 web/ 资源）→ exe 冒烟测试 → 打包：
+
+- `dist/blkscope-<版本>-windows-x64.zip`：`blkscope.exe` + `README.md` + `LICENSE` + `manual.md`（使用手册）
+- `dist/blkscope-<版本>-windows-x64.zip.sha256`：校验和
+
+`blkscope.exe` 完全独立、离线可用，**不需要安装 Python**，直接
+`blkscope.exe <trace> -o out` 即可。单文件 exe 首次运行会自解压到 `%TEMP%`，
+启动需要几秒钟。
 
 ## 界面快捷键
 

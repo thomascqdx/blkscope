@@ -10,13 +10,22 @@ TOOLS_DIR = os.path.join(ROOT, "tools")
 
 
 def find_tp_binary() -> str:
-    """Resolve trace_processor_shell: env BLKSCOPE_TP > tools/ > error."""
+    """Resolve trace_processor_shell.
+
+    Lookup order: env BLKSCOPE_TP > bundled tools/ (sys._MEIPASS, set by
+    PyInstaller frozen builds) > repo tools/ > error.
+    """
     env = os.environ.get("BLKSCOPE_TP")
     if env:
         if os.path.isfile(env):
             return env
         raise FileNotFoundError(f"BLKSCOPE_TP points to a missing file: {env}")
     name = "trace_processor_shell.exe" if sys.platform == "win32" else "trace_processor_shell"
+    meipass = getattr(sys, "_MEIPASS", None)          # PyInstaller bundle
+    if meipass:
+        candidate = os.path.join(meipass, "tools", name)
+        if os.path.isfile(candidate):
+            return candidate
     candidate = os.path.join(TOOLS_DIR, name)
     if os.path.isfile(candidate):
         return candidate

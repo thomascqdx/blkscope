@@ -6,7 +6,7 @@
 pyproject.toml            # 包 blkscope，入口 `blkscope = blkscope.cli:main`；依赖 perfetto、pandas、numpy
 src/blkscope/
   cli.py                  # 参数解析；每个输入 Trace → 一个 HTML
-  tp.py                   # 定位 trace_processor 二进制（BLKSCOPE_TP 环境变量 > tools/ > 报错并提示 scripts/fetch_tp.py）
+  tp.py                   # 定位 trace_processor 二进制（BLKSCOPE_TP 环境变量 > 打包内 tools/（sys._MEIPASS）> 仓库 tools/ > 报错并提示 scripts/fetch_tp.py）
   loader.py               # 输入格式处理：zip 解包、目录（第一层）扫描、格式嗅探；产出 [(trace_name, path)]
   extract.py              # SQL 查询 → 原始事件 DataFrame（只做取数，不做逻辑）
   model.py                # 纯函数：配对、归属、优先级、文件关联、槽位、D 状态因果、数据质量
@@ -17,6 +17,7 @@ web/
   index.html, css/*.css, js/*.js
 scripts/fetch_tp.py       # 下载 trace_processor_shell 到 tools/（支持 --proxy）
 scripts/validate_sample.py# 用 samples/ 中的样例跑全流程并打印校验指标
+scripts/build_release.py# 一键 Release 构建：单测 + PyInstaller 单文件 exe + 冒烟 + dist/ zip（含 sha256）
 tests/                    # pytest；model.py 用合成 DataFrame 测试
 ```
 
