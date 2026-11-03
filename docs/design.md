@@ -147,6 +147,30 @@ orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_
   payload 的 req 增加列 `lost`（0/1）。数据质量增加一条 info：「N 个请求没有 complete 事件（多为 flush，内核未上报 block_rq_complete），仅标注下发时刻」。
 - zip 解包要防止路径穿越（成员路径必须落在临时目录内）；每个 trace 处理完要关闭 trace_processor 进程。
 
+## 3.9 文本 trace 的 block 事件回退（v0.6.0）
+
+问题：`trace_processor` v57.2 的 systrace 文本解析器只产出调度事件（实测 `short_trace.atrace`：`ftrace_event` 只有
+`sched_switch`，`block_rq_*` 全丢），CLI 对整份文件生成 0 个请求；而文本日志里这些 block 事件是完整的。
+
+- `textlog.looks_like_text(path)`：读文件头，无 NUL、可解码、含 trace 特征（`TRACE:` / `# tracer` /
+  `tracing_mark_write` / `block_rq_`）才视为文本；gzip / protobuf 不触发。
+- `textlog.parse_block_events(path)`：流式扫描含 `block_rq_` 的行，同时支持两种格式：
+  - atrace 位置格式：`task-pid (tgid) [cpu] flags ts: block_rq_x: dev rwbs bytes () sector + nr ... [comm]`
+  - Perfetto KV 格式：`... ts: block_rq_x: dev=8,32 sector=... nr_sector=... rwbs=... comm="..."`
+  - `dev` 转 Linux `new_encode_dev`（minor > 255 的 loop 设备不串号）；`bytes = nr_sector * 512`；ts 转 int64 ns；tgid 允许 `(-------)` 占位。
+  - 输出 insert / issue / complete 三张表（列与 SQL 一致），以及**按文件顺序**保留的事件列表（脚本复算用）。
+- `textlog.attach_utids`：用 trace_processor 的 `thread` + `thread_ranges`，按 `tid + ts + comm` 解析 `utid`；
+  找不到的线程合成一条（`utid` / `upid` 取现有最大值之后，进程名先用 comm 兜底），返回附加线程行与统计。
+- `extract_all(tp, path)`：仅当文本且 trace_processor 没有 insert/issue 时合并回退结果，扩展 `t_min/t_max`，
+  追加 `notes`（info：block 事件来自文本解析）；若 trace_processor 已有 block 事件，只做脚本复算、不合并，避免重复。
+- `textlog.build_script_report(events)`：逐行复刻 `block_rq_pars_enhanced.py` 的算法——
+  `(dev, sector)` 键覆盖、insert 与 issue 双计、最后一次 issue 配对、累计阈值，输出
+  `read_n / read_mb / 两阶段统计 / Top5`，写入 payload `script`。
+  注意它复刻的是脚本的**原值**，与工具模型（FIFO 配对）不同；报告页并排展示并说明差异。
+- 文本日志的线程表可能没有进程名：`extract._fill_process_names` 用主线程/首个线程名补齐，避免进程组和报告进程视图空白。
+- 限制：文本日志不解析 `tran_fs_pagecache_start` / `tran_block_feature` / `sched_blocked_reason`，
+  相关功能按现有降级逻辑；回退只在没有 block 事件时触发，二进制 trace 零开销。
+
 ## 4. Payload（payload.py）
 
 顶层 JSON，按列存储，字符串池化（`strs` 数组 + 列中存下标）；时间相对于 `t0 = 有效时间窗起点`，单位 ns，缺失值用 -1。
@@ -154,7 +178,7 @@ orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_
 ```jsonc
 {
   "v": 1,
-  "meta": {"name", "source", "t0_abs", "dur", "device": {...}, "generated", "tool_version"},
+  "meta": {"name", "source", "t0_abs", "trace_start_abs", "dur", "device": {...}, "generated", "tool_version"},
   "quality": [{"level","code","msg"}],
   "strs": ["..."],
   "procs":   {"upid":[], "pid":[], "name":[/*str idx*/]},
@@ -169,7 +193,13 @@ orphan complete、未完成请求、被丢弃的 insert 的数量；`ftrace_cpu_
   "files":   {"name":[/*str*/], "dev":[], "ino":[], "meta":[], "hint":[/*str，进程名或空*/]},
   "batches": {"utid":[], "ts":[], "end":[], "file":[], "page0":[], "pages":[], "start":[/*has_start*/]},
   "dst":     {"utid":[], "ts":[], "dur":[], "fn":[/*str*/], "fn_ok":[], "iow":[], "wait_off":[], "wait_req":[], "wait_src":[]},
-  "requeues":{"ts":[], "req":[], "reason":[]}
+  "requeues":{"ts":[], "req":[], "reason":[]},
+  "script": { // 可选，仅文本日志：按原 block_rq_pars_enhanced.py 复算（全 trace）
+    "span_s": 20.0, "read_n": 0, "read_mb": 0.0,
+    "ins_iss": {"n","avg_ms","min_ms","max_ms","lt1","lt3","lt5","ge10","ge25"},
+    "iss_cmp": {"n","avg_ms","min_ms","max_ms","lt1","lt3","lt5","ge10","ge25"},
+    "top": [{"name":"...", "read_kb":0, "write_kb":0, "total_kb":0}]
+  }
 }
 ```
 
@@ -285,6 +315,7 @@ JSON → gzip → base64，放进 `<script type="application/octet-stream" id="p
 4. 慢 IO：W 内（f > 0）`total ≥ 阈值`的请求，按 total 倒序取前 500。列：开始时间、总耗时、排队、服务、大小、rwbs、优先级标志、进程/线程、文件。点击行选中该请求并把视图居中到它。
 5. 关键线程阻塞：线程范围是有 IO 的进程中的主线程（tid == pid）和名为 `RenderThread` 的线程。
    列：进程、线程、D 时长（W 内）、io_wait=1 的时长、有等待请求的 D 段数、所等待请求的总耗时之和、最长 D 段（点击跳转）。按 D 时长倒序。
+6. Block RQ 报告（v0.6.0，见 5.7）：旧脚本 `block_rq_pars_enhanced.py` 的指标与分桶、直方图、Top N、复制文本、脚本原值对照。
 
 **其他**
 - 慢 IO 阈值：标题栏有输入框（ms，默认 10），同时影响红色描边和「慢 IO」Tab。
@@ -311,3 +342,37 @@ JSON → gzip → base64，放进 `<script type="application/octet-stream" id="p
 - `html.py` 把结果替换到模板占位符 `<!--__MANUAL__-->`，**最后一个**替换（避免手册正文里的占位符字样被二次替换）；manifest 没有 manual 时替换为空。
 - 前端：标题栏「手册」按钮打开全屏浮层，左侧目录（h2 / h3，点击滚动到对应位置），右侧正文可选中复制；帮助浮层里也有「打开完整使用手册」链接。
 - 浮层打开时，除 `Esc` / `?` / `L` 外的单键快捷键不响应；手册打开时 `Ctrl+A` 只全选手册正文。
+
+### 5.7 Block RQ 报告 Tab（v0.6.0）
+
+**挂载**：`panels.init()` 之后注册第 6 个 Tab（id=`report`，标签「Block RQ 报告」），追加在「关键线程阻塞」之后；
+默认激活仍是「当前选择」。不改现有 Tab / 轨道 / 计数器 / 标题栏，样式类统一加 `rq-` 前缀。
+
+**窗口与数据**
+- 窗口 W 与其它 Tab 相同：`panels.statsWindow()`（选区或全 trace）；设备过滤同「含 loop 设备」；
+  轨道过滤同 `panels.areaTracks()`（v0.4 的 `tracks = Set<leaf key> | null`）。
+- 框选结束（拖动 / Ctrl+A / R）时，如果当前 Tab 是 `report`，不自动切到 `area`，只刷新报告；其它 Tab 行为不变。
+  标题栏「定位」与标记列表的「选区」按钮属于显式跳转，仍切到区域统计。
+- `collect(w0, w1, inclLoop, tracks)`：遍历 `req`，先用与 `IOT.stats` 相同的 lane/qlane/treq/files 掩码过滤，
+  再取 `t_cmp ∈ W` 的 disk 请求；读请求（`rwbsOp === 1`）收集
+  `queue = t_iss0 - t_ins`（有 insert）、`requeue = t_iss - t_iss0`（仅重下发）、`svc = t_cmp - t_iss`、
+  `insLast = t_iss - t_ins`（脚本定义），单位为 ns。
+- 概览字节 / 速度复用 `IOT.stats`（与区域统计同口径：按 issue→complete 与 W 的重叠分摊、含轨道过滤）；
+  Top N 复用 `stats.procs/threads`，按 `total` 倒序，过滤 `n == 0`。
+
+**分桶与展示**
+- 分桶：`<1 / <3 / <5 / ≥10 / ≥25 ms`，前三个为累计占比（与脚本一致）；平均 / 最小 / 最大用 ns 存储，显示 ms。
+- 直方图：1 ms 箱，范围 0–N；最后一箱是「≥N」溢出箱（脚本原版会丢掉超过上限的值，这里不丢）；
+  默认 40 ms，可切 200 ms；tooltip 显示区间、数量、占比。
+- 概览卡：窗口时长、读请求数、读/写总量、读/写速度、≥25 ms 慢读数。
+- 阶段表：排队 / requeue / 服务三行 + 脚本定义参考行；列：样本数、平均、最小、最大、五个桶。
+- Top N：默认**线程**（脚本 comm 口径），可切进程；Top 5/10/20；列：名称、读、写、合计、占比、请求数；
+  点击行调用 `panels.jumpTo(upid, utid)` 定位轨道。
+- 复制报告：生成脚本风格纯文本（窗口、设备/轨道、概览、阶段表、Top N、口径脚注），
+  `navigator.clipboard.writeText`，失败时回退到临时 textarea + `execCommand('copy')`。
+- 脚本原值：`payload.script` 存在时（文本日志）在底部显示**可折叠**对照块——脚本原值 / 工具口径 / 差异原因 /
+  脚本 Top 5；不存在时整块隐藏。工具列取「含 loop + 全轨道」并跟随当前窗口，提示脚本原值是全 trace 静态值。
+- 口径说明（必须写进页面）：脚本按 `(dev,sector)` 覆盖配对，扇区并发时 `insert→issue` 偏大
+  （样例 5.45 ms / 最大 15.87 s vs 工具 0.46 ms / 53 ms）；脚本 Top N 在 insert 与 issue 两处累加（约 2×）；
+  脚本读总量只累加 issue；脚本无设备 / 轨道过滤（含 loop）。
+- 空态：没有 `block_rq_*` 时提示抓取配置 / 文本回退；没有 insert 时排队两行置灰；没有完成读时阶段表与直方图显示无数据。

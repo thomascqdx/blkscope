@@ -166,6 +166,7 @@ def build_payload(m, name: str, source: str) -> dict:
         "batches": batches,
         "dst": dst,
         "requeues": requeues,
+        **({"script": m.script} if getattr(m, "script", None) else {}),
     }
 
 

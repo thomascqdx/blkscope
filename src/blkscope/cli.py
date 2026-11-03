@@ -44,7 +44,7 @@ def _process(name: str, path: str, outdir: str, write_json: bool,
         tp = open_trace(path)
         try:
             print(f"[{name}] extracting events ...", flush=True)
-            ex = extract_all(tp)
+            ex = extract_all(tp, path)
         finally:
             tp.close()
         if ex.t_max <= ex.t_min and not len(ex.threads):

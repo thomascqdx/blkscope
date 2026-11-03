@@ -97,6 +97,8 @@ class Extracted:
     t_min: int = 0  # valid window: [t_min, t_max] absolute ns
     t_max: int = 0
     trace_start: int = 0  # trace_bounds.start_ts (Perfetto UI time origin)
+    notes: list = field(default_factory=list)  # (level, code, msg) extras
+    script: dict | None = None                 # text-log script replay
 
 
 def _query(tp, sql: str) -> pd.DataFrame:
@@ -129,7 +131,29 @@ def _events(tp, name: str, arg_keys, base_cols) -> pd.DataFrame:
     return df[cols]
 
 
-def extract_all(tp) -> Extracted:
+def _fill_process_names(threads: pd.DataFrame) -> pd.DataFrame:
+    """Fill missing process names with the main/first thread name.
+
+    Text systrace has thread names but rarely process names; without this
+    every process group and the report's process view would be nameless.
+    """
+    th = threads.copy()
+    missing = th["process_name"].isna() | \
+        (th["process_name"].astype(str).str.len() == 0)
+    if not missing.any():
+        return th
+    names = {}
+    for upid, g in th.groupby("upid"):
+        main = g[(g["tid"] == g["pid"]) & g["thread_name"].notna()]
+        pick = main if len(main) else g[g["thread_name"].notna()]
+        if len(pick):
+            names[upid] = pick.iloc[0]["thread_name"]
+    th["process_name"] = th["process_name"].astype("object")
+    th.loc[missing, "process_name"] = th.loc[missing, "upid"].map(names)
+    return th
+
+
+def extract_all(tp, path: str | None = None) -> Extracted:
     out = Extracted()
     for attr, (event, arg_keys, base_cols) in _EVENT_QUERIES.items():
         setattr(out, attr, _events(tp, event, arg_keys, base_cols))
@@ -150,6 +174,8 @@ def extract_all(tp) -> Extracted:
     if out.threads.empty:
         out.threads = _empty(["utid", "tid", "thread_name", "upid",
                               "pid", "process_name", "parent_pid"])
+    else:
+        out.threads = _fill_process_names(out.threads)
 
     # ts range per utid, used to disambiguate reused tids (design 3.2).
     out.thread_ranges = _query(
@@ -186,4 +212,52 @@ def extract_all(tp) -> Extracted:
     tb = _query(tp, "select start_ts from trace_bounds")
     if not tb.empty and not pd.isna(tb.start_ts.iloc[0]):
         out.trace_start = int(tb.start_ts.iloc[0])
+
+    # text systrace fallback (design 3.9): the systrace parser keeps only
+    # scheduling events, so block_rq_* are read from the text log itself.
+    # The script replay is always built for text logs (it is the script's
+    # original number set); merging only happens when TP produced no block
+    # request, to avoid double counting.
+    if path:
+        from . import textlog
+        if textlog.looks_like_text(path):
+            ev = textlog.parse_block_events(path)
+            if ev.has_block:
+                out.script = textlog.build_script_report(ev.rows)
+                if not (len(out.rq_insert) or len(out.rq_issue)):
+                    att = textlog.attach_utids(ev, out.threads,
+                                               out.thread_ranges)
+                    out.rq_insert = att.insert
+                    out.rq_issue = att.issue
+                    out.rq_complete = att.complete
+                    if att.synth_rows:
+                        synth = pd.DataFrame(att.synth_rows,
+                                             columns=out.threads.columns)
+                        out.threads = pd.concat(
+                            [out.threads, synth], ignore_index=True)
+                    if out.t_max > out.t_min:
+                        out.t_min = min(out.t_min, ev.t_min)
+                        out.t_max = max(out.t_max, ev.t_max)
+                    else:
+                        out.t_min, out.t_max = ev.t_min, ev.t_max
+                    msg = (f"trace_processor 未解析 block_rq_* 文本事件；"
+                           f"已从文本日志补 {len(att.insert)} 条 insert / "
+                           f"{len(att.issue)} 条 issue / "
+                           f"{len(att.complete)} 条 complete")
+                    if att.n_synth:
+                        msg += f"（{att.n_synth} 个线程为合成）"
+                    if att.n_tid_missing:
+                        msg += (f"；{att.n_tid_missing} 条事件没有 atrace "
+                                f"前缀，按 comm 合成线程")
+                    out.notes.append(("info", "text_block", msg))
+                    if ev.bad:
+                        out.notes.append((
+                            "warn", "text_block_bad",
+                            f"文本日志中有 {ev.bad} 行 block_rq_* 无法解析，"
+                            f"已跳过"))
+                else:
+                    out.notes.append((
+                        "info", "text_block_skipped",
+                        "文本日志中的 block_rq_* 已由 trace_processor 解析，"
+                        "未启用文本回退；脚本原值仅用于报告对照"))
     return out

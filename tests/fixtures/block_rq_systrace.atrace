@@ -1,0 +1,26 @@
+# tracer: nop
+#
+# entries-in-buffer/entries-written: 12/12   #P:4
+#
+#                                      _-----=> irqs-off
+#                                     / _----=> need-resched
+#                                    | / _---=> hardirq/softirq
+#                                    || / _--=> preempt-depth
+#                                    ||| /     delay
+#           TASK-PID       TGID    CPU#  |||||  TIMESTAMP  FUNCTION
+#              | |           |       |   |||||     |         |
+          <idle>-0       (-----) [000] .....     1.000000: sched_switch: prev_comm=swapper/0 prev_pid=0 prev_prio=120 prev_state=R ==> next_comm=app.main next_pid=100 next_prio=120
+         app.main-100    (  100) [000] .....     1.001000: sched_switch: prev_comm=app.main prev_pid=100 prev_prio=120 prev_state=D ==> next_comm=app.write next_pid=101 next_prio=120
+        app.write-101    (  101) [001] .....     1.002000: sched_switch: prev_comm=app.write prev_pid=101 prev_prio=120 prev_state=D ==> next_comm=swapper/1 next_pid=0 next_prio=120
+         app.main-100    (  100) [000] .....     3.000000: block_rq_insert: 8,32 R 4096 () 10000 + 8 be,0 [app.main]
+         app.main-100    (  100) [000] .....     3.001000: block_rq_issue: 8,32 R 4096 () 10000 + 8 be,0 [app.main]
+        app.write-101    (  101) [001] .....     3.002000: block_rq_insert: 8,32 R 8192 () 10000 + 16 be,0 [app.write]
+        app.write-101    (  101) [001] .....     3.003000: block_rq_issue: 8,32 R 8192 () 10000 + 16 be,0 [app.write]
+         app.main-100    (  100) [000] .....     3.004000: block_rq_complete: 8,32 R () 10000 + 8 be,0 [0]
+        app.write-101    (  101) [001] .....     3.005000: block_rq_complete: 8,32 R () 10000 + 16 be,0 [0]
+        app.write-101    (  101) [001] .....     3.006000: block_rq_insert: 7,304 W 4096 () 20000 + 8 be,0 [app.write]
+        app.write-101    (  101) [001] .....     3.006100: block_rq_issue: 7,304 W 4096 () 20000 + 8 be,0 [app.write]
+          <idle>-0       (-----) [002] d.h1.     3.006200: block_rq_complete: 7,304 W () 20000 + 8 be,0 [0]
+         app.main-100    (  100) [000] .....     3.007000: block_rq_insert: dev=8,32 sector=30000 nr_sector=8 rwbs=R comm="app.main"
+         app.main-100    (  100) [000] .....     3.007100: block_rq_issue: dev=8,32 sector=30000 nr_sector=8 rwbs=R comm="app.main"
+          <idle>-0       (-----) [002] d.h1.     3.007500: block_rq_complete: dev=8,32 sector=30000 nr_sector=8 rwbs=R comm="0"

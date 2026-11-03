@@ -57,6 +57,7 @@ class Model:
     t_min: int = 0
     t_max: int = 0
     trace_start: int = 0
+    script: dict | None = None   # text-log replay of the old script
 
 
 # ---------------------------------------------------------------- 3.3 rwbs
@@ -872,6 +873,8 @@ def build_quality(ex, counters: dict, t_min: int, t_max: int) -> list:
         warn("ftrace_overrun",
              f"录制期间丢失 {ov} 个 ftrace 事件（CPU overrun），"
              f"部分 IO 事件可能缺失")
+    for level, code, msg in getattr(ex, "notes", []):
+        (warn if level == "warn" else info)(code, msg)
     return q
 
 
@@ -884,6 +887,7 @@ def build_model(ex) -> Model:
     m.threads = ex.threads
     m.t_min, m.t_max = ex.t_min, ex.t_max
     m.trace_start = getattr(ex, "trace_start", 0)
+    m.script = getattr(ex, "script", None)
 
     req, counters = pair_requests(ex.rq_insert, ex.rq_issue, ex.rq_complete)
     m.counters = counters

@@ -1,4 +1,4 @@
-﻿# blkscope（块设备 IO Trace 可视化工具）— 需求与调研记录（讨论稿）
+# blkscope（块设备 IO Trace 可视化工具）— 需求与调研记录（讨论稿）
 
 > 状态：需求确认中，未开始实现。标注 **[待确认]** 的条目需要用户拍板。
 
@@ -160,3 +160,35 @@ ino 为文件系统元数据 inode 时标为「FS 元数据」。所有关联结
     - `窗口相对`：相对 ftrace 有效窗口起点（旧行为）。
   - **定位输入（快捷键 G / 标题栏「定位」）**：输入起点、可选终点、可选名称。解析规则：Timecode（`HH:MM:SS.xxx…`，可带 `Nd` 天数前缀，任意空白 / 细空格忽略）一律按 Perfetto 起点；纯整数（可带千分位逗号 / 空白）一律按绝对 ns；带单位（s/ms/us/µs/ns）或带小数无单位（按秒）的数值按**当前时间基准**。超出 ftrace 有效窗口的部分截断并提示，完全在窗口外报错。有终点 → 设为选区（全部轨道）并缩放到该范围；只有起点 → 居中并放临时标记；「添加标记」→ 持久标记（可带名称，有终点时画成区间）。对话框列出已有持久标记，可一键设为选区或删除。「当前选择」的选区摘要额外显示原始 ns 起止，便于回贴到 Perfetto。
 - Release 构建：双击仓库根目录 `build_release.bat` 即可（用户要求；bat 负责检查 .venv、缺 PyInstaller 时自动装进 .venv、透传参数、双击运行时结束后暂停，构建逻辑在 `scripts/build_release.py`）一键产出 Windows 发布包——检查工作区干净 → 获取/校验 trace_processor → 跑单测 → PyInstaller 打成**单文件 exe**（内置 trace_processor 与 web/ 资源，完全离线，无需 Python）→ 用 exe 冒烟（`--version` + 跑测试 fixture 生成 HTML）→ 打包 `dist/blkscope-<版本>-windows-x64.zip`（exe + README + LICENSE + 使用手册）并输出 sha256。exe 内 trace_processor 查找顺序：`BLKSCOPE_TP` > 包内 `tools/` > 仓库 `tools/`。
+
+## 7. Block RQ 报告（v0.6.0，已确认）
+
+背景：用户已有 `block_rq_pars_enhanced.py`（纯文本日志统计 block_rq_*），希望把结果整合进 HTML 展示页，且不影响现有界面。
+实测：`trace_processor_shell` v57.2 解析 systrace 文本时只产出调度事件，对 `short_trace.atrace`（400 MB）生成 0 个请求；
+脚本对同一文件能算出 72,450 个完成读请求 / 1,945 MB。因此必须补一层文本解析，否则报告页在该输入上是空的。
+
+**数据层**
+- 新增文本回退解析：当输入是可解码文本且 `trace_processor` 未解析出 `block_rq_*` 时，流式解析
+  `block_rq_insert / issue / complete`（兼容 atrace 位置格式与 Perfetto `key=value` 格式），合并进现有 `Extracted` → 现有模型。
+- 线程归属：用 trace_processor 的 `thread` + `thread_ranges` 按 `tid + 时间范围 + comm` 解析 `utid`；解析不到的线程/进程合成一条（进程名用 comm 兜底）。
+- 时间窗按文本事件扩展 `t_min/t_max`；数据质量新增 info 说明事件来源。
+- 文本日志在构建时按**原脚本算法**复算原值（按 `(dev,sector)` 覆盖配对、insert 与 issue 双计、每次 issue 累加），写入 payload `script`，供报告页对照。
+
+**展示层**
+- 底部面板新增第 6 个 Tab「Block RQ 报告」，追加在现有 5 个 Tab 之后；不改现有 Tab / 轨道 / 计数器 / 标题栏。
+- 报告跟随选区、勾选的轨道（v0.4 的轨道过滤）与「含 loop 设备」过滤；
+  当前 Tab 是报告时，拖动框选 / Ctrl+A / R 不自动切到「区域统计」，只刷新报告。
+- 指标：窗口、读请求数、读/写总量、读/写速度、≥25 ms 慢读数；
+  阶段耗时拆成 `insert→首次 issue`（排队）、`首次→末次 issue`（requeue 等待）、`末次 issue→完成`（服务），
+  并给出脚本定义 `insert→末次 issue` 参考值；分桶为 `<1 / <3 / <5 / ≥10 / ≥25 ms`（累计占比，和脚本一致）。
+- 延迟分布：1 ms 分桶直方图，默认 0–40 ms，可切 0–200 ms；超过上限的值单独放「≥上限」溢出柱。
+- Top N 进程/线程（默认线程，即脚本的 comm 口径），可选 5/10/20，点击行定位到对应轨道。
+- 「复制报告」输出脚本风格的纯文本（窗口、设备/轨道、概览、阶段表、Top N、口径脚注）。
+- 若 payload 带 `script`（文本日志），报告页显示可折叠的「脚本原值」对照块：脚本原值 / 工具口径 / 差异原因 / 脚本 Top 5。
+- 口径说明必须写清：
+  - 脚本按 `(dev,sector)` 覆盖配对，同一扇区并发请求会让 `insert_time` 被后一个请求的 issue 覆盖，
+    `insert→issue` 会偏大（实测样例 5.45 ms / 最大 15.87 s，工具 FIFO 为 0.46 ms / 53 ms）。
+  - 脚本的 Top N 在 insert 和 issue 两处都累加，**约为实际值的 2 倍**；工具按请求去重。
+  - 脚本的读总量只累加 issue（单计），与 Top N 的双计口径不同；工具按完成请求的 bytes 统计。
+  - 脚本没有设备 / 轨道过滤（含 loop）；报告主表按当前过滤，对照块用「含 loop + 全轨道」对齐脚本原值。
+  - 报告页以工具模型为准，脚本原值仅作对照。

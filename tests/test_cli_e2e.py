@@ -60,6 +60,26 @@ def test_systrace_sched_only_degrades(tmp_path):
     assert meta["trace_start_abs"] <= meta["t0_abs"]
 
 
+def test_text_block_fallback_and_script_values(tmp_path):
+    """A text atrace loses block events in trace_processor; the fallback
+    must recover them and attach the old script's original numbers."""
+    r = run_cli(str(FIX / "block_rq_systrace.atrace"), "-o", str(tmp_path))
+    assert r.returncode == 0, f"stdout:\n{r.stdout}\nstderr:\n{r.stderr}"
+    p = payload_of(tmp_path / "block_rq_systrace.html")
+    assert len(p["req"]["dev"]) == 4
+    assert {d["name"] for d in p["devs"]} == {"8:32", "7:304"}
+    assert {d["kind"] for d in p["devs"]} == {"disk", "loop"}
+    assert any(q["code"] == "text_block" for q in p["quality"])
+    # process names are filled from the thread table for text traces
+    names = {p["strs"][i] for i in p["procs"]["name"]}
+    assert {"app.main", "app.write"} <= names
+    # script replay: one complete is swallowed by the (dev,sector) overwrite
+    assert p["script"]["read_n"] == 2
+    assert abs(p["script"]["read_mb"] - 0.015625) < 1e-12
+    assert [t["name"] for t in p["script"]["top"]] == ["app.write",
+                                                       "app.main"]
+
+
 def test_not_a_trace_fails_cleanly(tmp_path):
     r = run_cli(str(FIX / "not_a_trace.txt"), "-o", str(tmp_path))
     assert r.returncode == 1
