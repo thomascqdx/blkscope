@@ -40,6 +40,7 @@ IOT.data = (function () {
     D.t1 = D.dur;
     D.quality = P.quality || [];
     D.devs = P.devs || [];
+    D.script = P.script || null;       // text-log replay of the old script
     D.devIdx = new Map(D.devs.map((d, i) => [d.dev, i]));
     D.req = cols(P.req);
     D.nReq = D.req.dev.length;

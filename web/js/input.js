@@ -9,6 +9,16 @@ IOT.input = (function () {
   const qStartOf = i =>
     D.req.t_ins[i] >= 0 ? D.req.t_ins[i] : D.req.t_iss0[i];
 
+  // Area selection normally reveals 区域统计; keep the Block RQ report
+  // visible instead so its window-following numbers update in place.
+  function showAreaPanel() {
+    if (IOT.panels.activeId && IOT.panels.activeId() === 'report') {
+      IOT.panels.showSelection();
+    } else {
+      IOT.panels.activate('area');
+    }
+  }
+
   // which lifecycle phase contains time t? (design 5.3.1)
   function reqPhaseAt(i, t) {
     const R = D.req;
@@ -369,7 +379,7 @@ IOT.input = (function () {
       requestRender();
     } else if ((drag.kind === 'selarea' || drag.kind === 'seltime') &&
                drag.moved) {
-      if (IOT.state.area) IOT.panels.activate('area');
+      if (IOT.state.area) showAreaPanel();
       else IOT.panels.showSelection();
     }
     drag = null;
@@ -503,7 +513,7 @@ IOT.input = (function () {
         } else {                             // select whole trace
           IOT.state.area = { t0: 0, t1: D.dur, tracks: null };
           IOT.state.sel = null;
-          IOT.panels.activate('area');
+          showAreaPanel();
           requestRender();
         }
         e.preventDefault();
@@ -565,7 +575,7 @@ IOT.input = (function () {
             IOT.state.area = { t0: r[0], t1: r[1],
                                tracks: lv.length ? new Set(lv) : null };
             IOT.state.sel = null;
-            IOT.panels.activate('area');
+            showAreaPanel();
           }
         }
         requestRender(); break;

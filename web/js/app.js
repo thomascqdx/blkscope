@@ -163,6 +163,7 @@ IOT.app = (function () {
       header();
       qualityBanner();
       IOT.panels.init();
+      if (IOT.report) IOT.report.init();
       IOT.input.init();
       IOT.render.renderOverview();
       IOT.render.renderAll();

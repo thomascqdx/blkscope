@@ -36,6 +36,9 @@ blkscope 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTM
 - 文本 systrace / ftrace dump / atrace（含 HTML 包裹的 systrace）
 - gzip 压缩的 trace
 
+文本日志说明：`trace_processor` 的 systrace 文本解析只产出调度事件，`block_rq_*` 会由工具自带的文本回退解析补齐
+（同时支持 atrace 位置格式与 Perfetto `key=value` 格式）；数据质量里会有 `text_block` 提示。二进制 trace 不走回退。
+
 加载一条约 200 MB 的 trace 大约 10~20 秒（按阶段打印进度）。
 
 ### 抓取要求
@@ -76,7 +79,7 @@ blkscope 把一条 Android / Perfetto trace 离线转换成**单个自包含 HTM
 - **刻度尺**：时间刻度（默认与 Perfetto UI 对齐，可用标题栏「时间: …」切换基准）；显示选区范围与时长、标记旗标与名称、悬停时刻
 - **轨道区**：左侧轨道名（组可折叠），右侧 Canvas；滚轮纵向滚动
 - **分隔条**：拖动调整底部面板高度
-- **底部面板**：Tab 页（当前选择 / 区域统计 / 延迟分布 / 慢 IO / 关键线程阻塞），可用 Q 收起
+- **底部面板**：Tab 页（当前选择 / 区域统计 / 延迟分布 / 慢 IO / 关键线程阻塞 / Block RQ 报告），可用 Q 收起
 
 ## 4. 颜色与图例
 
@@ -204,6 +207,23 @@ W 内（重叠 f > 0）`总耗时 ≥ 标题栏阈值` 的请求，按总耗时�
 
 范围 = 有 IO 的非内核进程中主线程（tid == pid）与 RenderThread。列：进程、线程、D 时长、io_wait 时长、有等待请求的 D 段数、所等请求总耗时之和、最长 D 段（点击跳转）。
 
+### Block RQ 报告
+
+把 `block_rq_pars_enhanced.py` 的指标、阈值和 Top N 报告搬进页面，数字由当前工具模型实时计算，
+**跟随选区、勾选的轨道和「含 loop 设备」**：
+
+- 概览：读请求数（完成）、读 / 写总量、读 / 写速度、≥25 ms 慢读数、请求数
+- 阶段耗时（读请求）：`insert→首次 issue`（排队）、`首次→末次 issue`（requeue 等待）、`末次 issue→完成`（服务），
+  参考行 `insert→末次 issue`（脚本定义）；列：样本数、平均、最小、最大、`<1 / <3 / <5 / ≥10 / ≥25 ms`（累计占比）
+- 延迟分布：1 ms 分桶，默认 0–40 ms，可切 0–200 ms；最后一根柱是「≥上限」溢出柱
+- Top N：进程 / 线程（默认线程，脚本的 comm 口径）、Top 5/10/20；点击行定位到对应轨道
+- 复制报告：输出脚本风格的纯文本（窗口、设备 / 轨道、概览、阶段表、Top N、口径脚注）
+- 脚本原值：文本日志在构建时按**原脚本算法**复算，可在底部折叠块里和工具口径并排查看
+
+已知口径差异（报告页底部也有说明）：脚本按 `(dev,sector)` 覆盖配对，同一扇区并发时 `insert_time` 会被后一个请求的 issue 覆盖，
+`insert→issue` 偏大；脚本 Top N 在 insert 与 issue 两处累加（约 2×）；脚本读总量只累加 issue；脚本无设备 / 轨道过滤。
+报告页以工具模型（FIFO 配对）为准，脚本原值仅作对照。
+
 ## 8. 统计口径
 
 - 请求计量区间 `[s, e] = [t_iss, t_cmp]`；未完成的 `e = min(窗口末尾, t_iss + 200ms)`；没有 issue 的请求不计入
@@ -214,6 +234,8 @@ W 内（重叠 f > 0）`总耗时 ≥ 标题栏阈值` 的请求，按总耗时�
 - 排队 q = `t_iss0 − t_ins`（有 insert 才算）；服务 svc = `t_cmp − t_iss`（已完成才算）；总耗时 = `t_cmp − (t_make | t_ins | t_iss0)`；平均 / 最大都是 f>0 请求的未加权值
 - D 状态时长 = D 段与 W 的交集之和（只算有 IO 的线程）
 - 概览计数器同样按 issue→complete 重叠比例分摊到 100µs 分箱；深度类计数器是精确阶梯函数
+- Block RQ 报告的阶段表 / 直方图取 `t_cmp ∈ W` 的读请求（和「延迟分布」同一落点口径）；
+  概览的字节 / 速度仍用 `IOT.stats` 的重叠分摊（含轨道过滤）；「脚本原值」是构建时的全 trace 静态值，不随选区变化
 
 ## 9. 典型分析流程
 
@@ -259,6 +281,9 @@ W 内（重叠 f > 0）`总耗时 ≥ 标题栏阈值` 的请求，按总耗时�
 | `incomplete` | info | N 个请求到 trace 结束未完成 | 画到窗口末尾（截断 +200ms） |
 | `cmp_lost` | info | N 个请求没有 complete（多为 flush） | 仅标注下发时刻，按零长度处理 |
 | `dropped_insert` | info | N 个 insert 下发前被合并 / 丢失 | 正常 IO merge |
+| `text_block` | info | trace_processor 未解析 block_rq_*，已从文本日志补齐 | 文本日志的正常路径；线程缺失会用 comm 合成 |
+| `text_block_bad` | warn | 文本日志里有 N 行 block_rq_* 无法解析 | 确认日志格式未混入非 block 行 |
+| `text_block_skipped` | info | trace_processor 已解析出 block 事件，未启用文本回退 | 脚本原值仍然可用 |
 
 ## 11. 推测性结论与已知限制
 
@@ -269,6 +294,11 @@ W 内（重叠 f > 0）`总耗时 ≥ 标题栏阈值` 的请求，按总耗时�
 - **`caller#<id>`**：sched_blocked_reason.caller 是 interned id、符号表未解析时的降级显示。
 - **req_tag 不是硬件槽位**：blk-mq tag 复用率高，泳道槽位是按时序贪心分配的；真实 req_tag 只在详情展示。
 - **issue 次数 > insert**：requeue 后同一请求会重复 issue；请求配对按 (dev, sector) + 时序状态机完成。
+- **文本日志的 block 事件是回退解析的**：线程按 `tid + 时间范围 + comm` 对齐 trace_processor 的线程表，缺失时合成；
+  文件关联 / 优先级 / requeue 原因等仍依赖传音定制事件，缺失即降级。设备号按 Linux `new_encode_dev` 编码，minor > 255
+  的 loop 设备不会串号。
+- **脚本原值不是工具口径**：`Block RQ 报告` 的「脚本原值」按原脚本算法（按 `(dev,sector)` 覆盖、insert+issue 双计）复算，
+  只用于和旧报告对照；工具口径用 FIFO 配对和请求去重，并跟随选区 / 设备 / 轨道过滤。
 
 ## 12. FAQ
 

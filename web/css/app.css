@@ -324,3 +324,59 @@ body {
   color: #aaa; background: #22262e;
 }
 #manualbody a { color: #8ab4f8; }
+
+/* ---- Block RQ report (design 5.7) ------------------------------------- */
+#panelbody .rq-ctl { flex-wrap: wrap; align-items: center; }
+#panelbody .rq-copy { margin-left: auto; }
+#panelbody .rq-copystat {
+  color: #6fbf73; font-size: 10px; margin-left: 6px; min-width: 36px;
+}
+#panelbody .rq-top {
+  display: flex; gap: 10px; align-items: flex-start; flex-wrap: wrap;
+  margin-bottom: 7px;
+}
+#panelbody .rq-card {
+  background: #1e1e1e; border: 1px solid #333; border-radius: 4px;
+  padding: 5px 9px 6px; margin-bottom: 7px;
+}
+#panelbody .rq-top .rq-card { margin-bottom: 0; }
+#panelbody .rq-card h4 {
+  color: #8ab4f8; font-size: 11px; font-weight: 600; margin-bottom: 3px;
+}
+#panelbody .rq-ov { flex: 0 0 auto; min-width: 200px; }
+#panelbody .rq-grow { flex: 1 1 520px; min-width: 0; }
+#panelbody table.rq-kv td { padding: 0 12px 0 0; white-space: nowrap; }
+#panelbody table.rq-kv td.k { color: #888; }
+#panelbody table.rq-table { font-size: 11px; }
+#panelbody table.rq-table th,
+#panelbody table.rq-table td { padding-right: 8px; }
+#panelbody table.rq-table tr.rq-dim td { color: #8a8a8a; }
+#panelbody .rq-hint { color: #888; font-size: 10.5px; margin-top: 3px; }
+#panelbody .rq-hist { margin: 4px 0 3px; }
+#panelbody .rq-hlabel { color: #bbb; font-size: 10.5px; margin: 2px 0; }
+#panelbody .rq-bars {
+  display: flex; gap: 1px; align-items: flex-end; height: 70px;
+}
+#panelbody .rq-col {
+  flex: 1 1 0; min-width: 3px; display: flex; align-items: flex-end;
+}
+#panelbody .rq-bar { width: 100%; min-height: 0; }
+#panelbody .rq-axis {
+  display: flex; gap: 1px; height: 12px; font-size: 9px; color: #777;
+}
+#panelbody .rq-axis span {
+  flex: 1 1 0; min-width: 3px; white-space: nowrap; overflow: visible;
+}
+#panelbody .rq-nodata { color: #777; font-size: 10.5px; padding: 4px 0; }
+#panelbody .rq-empty { color: #e8b45a; font-size: 11px; margin-bottom: 6px; }
+#panelbody .rq-script {
+  border-top: 1px solid #333; margin-top: 8px; padding-top: 5px;
+}
+#panelbody .rq-shead {
+  color: #e8b45a; font-size: 11px; cursor: pointer;
+  user-select: none;
+}
+#panelbody .rq-sbody { margin-top: 5px; }
+#panelbody .rq-note {
+  color: #888; font-size: 10.5px; line-height: 1.5; margin-top: 8px;
+}

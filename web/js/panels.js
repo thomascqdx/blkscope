@@ -498,6 +498,15 @@ IOT.panels = (function () {
     return -1;
   }
 
+  // cross-tab jump used by the Block RQ report's Top N table
+  function jumpTo(upid, utid) {
+    const pi = procListIdx(upid);
+    if (pi < 0) return;
+    expandProcAndScroll(pi, utid != null ? utid : null);
+  }
+
+  function activeId() { return active; }
+
   // ---------------- Tab 2: 区域统计 ----------------
   let areaView = 'proc';
   const sortSt = {
@@ -993,5 +1002,6 @@ IOT.panels = (function () {
   }
 
   return { init, registerTab, activate, showSelection, toggleHelp,
-           togglePanel };
+           togglePanel, jumpTo, activeId, onTextClick,
+           statsWindow, areaTracks };
 })();

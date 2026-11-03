@@ -156,6 +156,46 @@ def py_stats(P: dict, w0: float, w1: float,
             "procs_rw": prw, "thrs_rw": trw, "dtime": dtime}
 
 
+def py_report(P: dict, w0: float, w1: float) -> dict:
+    """Independent check for the Block RQ report's read population.
+
+    Same rule as IOT.report.collect with tracks=null: completed disk reads
+    whose completion is in [w0, w1] (endpoints included, like the old
+    script).
+    """
+    strs = P["strs"]
+    R = P["req"]
+    kind = {d["dev"]: d["kind"] for d in P["devs"]}
+    n = 0
+    read_bytes = 0.0
+    q = 0
+    svc = 0
+    for i in range(len(R["dev"])):
+        tc = R["t_cmp"][i]
+        if tc < 0 or tc < w0 or tc > w1:
+            continue
+        if kind.get(R["dev"][i]) != "disk":
+            continue
+        op = 0
+        for ch in strs[R["rwbs"][i]] or "":
+            if ch == "R":
+                op = 1
+                break
+            if ch == "W":
+                op = 2
+                break
+            if ch in "DN":
+                break
+        if op != 1:
+            continue
+        n += 1
+        read_bytes += R["bytes"][i]
+        if R["t_ins"][i] >= 0 and R["t_iss0"][i] >= 0:
+            q += 1
+        svc += 1
+    return {"n": n, "readBytes": read_bytes, "qN": q, "svcN": svc}
+
+
 def py_main_thread_dtime(P: dict, top_name: str, w0: float, w1: float):
     """D-state overlap of the top process's main thread (tid==pid)."""
     strs = P["strs"]
@@ -484,6 +524,43 @@ def main() -> int:
         click_tab("关键线程阻塞")
         shot("21_keythreads")
         page.evaluate("""document.getElementById('panelbody').scrollTop = 0""")
+
+        # ---- Block RQ report: tab, cross-check, script comparison ---------
+        click_tab("Block RQ 报告")
+        txt = page.evaluate("document.getElementById('panelbody').innerText")
+        for kw in ("读请求数", "阶段耗时", "insert→首次 issue",
+                   "末次 issue→完成", "Top 5", "口径"):
+            assert kw in txt, f"Block RQ report missing {kw!r}"
+        rep = page.evaluate("IOT.report.collect(5e9, 8e9, false, null)")
+        exp = py_report(load_payload(args.html), 5e9, 8e9)
+        log("rq report reads:", rep["nRead"], "| py:", exp["n"],
+            "| read bytes:", round(rep["readBytes"]), exp["readBytes"])
+        assert rep["nRead"] == exp["n"], \
+            f"report read count {rep['nRead']} != py {exp['n']}"
+        assert abs(rep["readBytes"] - exp["readBytes"]) < 1, \
+            "report read bytes mismatch"
+        assert len(rep["queue"]) == exp["qN"]
+        assert len(rep["svc"]) == exp["svcN"]
+        shot("21f_block_rq_report")
+        click_sub("进程")
+        click_sub("Top 10")
+        page.wait_for_timeout(100)
+        assert page.evaluate(
+            "document.querySelector('#panelbody .rq-top').innerText")
+        has_script = page.evaluate("!!(IOT.data.D.script)")
+        if has_script:
+            page.locator(".rq-shead").first.click()
+            page.wait_for_timeout(120)
+            stxt = page.evaluate(
+                "document.getElementById('panelbody').innerText")
+            for kw in ("脚本原值", "工具（含 loop", "脚本 Top 5"):
+                assert kw in stxt, f"script comparison missing {kw!r}"
+            page.evaluate(
+                "document.getElementById('panelbody').scrollTop = 99999")
+            shot("21g_rq_script")
+        copy = page.evaluate("IOT.report.reportText()")
+        assert "===== Block RQ 报告 =====" in copy
+        assert "读请求数" in copy and "阶段耗时" in copy
 
         # ---- panel text selection + Top N + Q drawer + thead click --------
         # text selection: in 区域统计 thread view a horizontal drag across a

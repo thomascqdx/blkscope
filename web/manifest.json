@@ -13,6 +13,7 @@
     "js/manual.js",
     "js/input.js",
     "js/panels.js",
+    "js/report.js",
     "js/app.js"
   ]
 }

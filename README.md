@@ -51,6 +51,9 @@ python -m venv .venv
 .\.venv\Scripts\blkscope --version
 ```
 
+文本 `.atrace` / systrace：`trace_processor` 的文本解析只产出调度事件，blkscope 会流式补齐
+`block_rq_insert / issue / complete`（位置格式与 Perfetto `key=value` 格式都支持），数据质量里会提示 `text_block`。
+
 输出名冲突时自动追加数字后缀（`name_2.html`）。加载一条 200MB 的 trace
 大约需要 10~20 秒（期间按阶段打印进度）。
 
@@ -111,6 +114,8 @@ python -m venv .venv
 - **延迟分布**：排队 / 服务 / 总耗时的对数直方图 + p50/p90/p99/max
 - **慢 IO**：超过阈值（默认 10ms）的请求，按总耗时倒序
 - **关键线程阻塞**：主线程（tid==pid）与 RenderThread 的 D 阻塞汇总（内核线程已排除）
+- **Block RQ 报告**：旧 `block_rq_pars_enhanced.py` 的指标 / 阈值 / 直方图 / Top N 搬进页面，跟随选区、轨道和设备过滤；
+  可复制报告文本；文本日志还会并排显示旧脚本的原值（按原算法复算）与工具口径的差异
 
 统计口径：请求按 `[t_iss, t_cmp]` 与统计窗口的**重叠比例**分摊字节数；速度 = 分摊字节 / 窗口时长；未完成请求按 `t_iss + 200ms` 截断。
 
