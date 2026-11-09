@@ -1,10 +1,13 @@
-"""批量统计启动 trace 首帧 DrawFrames 窗口内 RenderThread 的 IO 等待与读入文件。
+"""批量统计启动 trace 首帧 DrawFrames 窗口内 RenderThread 的 IO 等待与 block 读请求。
 
 对每个 trace：定位应用 RenderThread 上第一个 `DrawFrames <id>` slice 作为窗口
 （仅 RenderThread 线程，其它线程与窗口外一律不计），统计窗口内：
 - D/DK 且 io_wait=1 的 IO 等待时长（以及全部 D/DK 时长）；
-- mm_filemap_add_to_page_cache 读入 page cache 的文件与字节数（每事件 1 页
-  = 4096 字节，文件名用整条 trace 的 tran_fs_pagecache_start 事件解析）。
+- block_rq_insert + 无对应 insert 的 block_rq_issue（loop 直发）中 rwbs 含 'R'
+  的读请求字节数（bytes 字段，缺失时 nr_sector*512），按 dev major 分 disk/loop；
+- 请求读的是哪个文件（推测）：请求归属于它之前最近的 mm_filemap_add_to_page_cache
+  连续批次中页数最多的 (s_dev,ino)；无批次时回退到 20ms 内最近一次
+  tran_fs_pagecache_start；文件名由整条 trace 的 tran_fs_pagecache_start 解析。
 
 用法：
     .\\.venv\\Scripts\\python scripts\\startup_firstframe_io.py <目录>
@@ -14,6 +17,7 @@
 from __future__ import annotations
 
 import argparse
+import bisect
 import os
 import re
 import shutil
@@ -27,7 +31,7 @@ from pathlib import Path
 
 import pandas as pd
 
-PAGE_BYTES = 4096
+LOOKBACK_NS = 20_000_000  # 文件关联向前多看 20ms 的 add 批次 / pagecache_start
 TRACE_EXTS = {".trace", ".pftrace", ".perfetto-trace", ".pb"}
 REPO_TOOLS = Path(__file__).resolve().parents[1] / "tools"
 
@@ -40,15 +44,17 @@ SUM_COLS = [
     "trace文件", "包名", "时间戳", "启动耗时ms(文件名)", "序列号", "启动类型码(文件名)",
     "启动类型(trace识别)", "启动耗时ms(trace识别)", "pid", "RenderThread tid",
     "首帧slice", "首帧开始(相对启动开始ms)", "DrawFrames耗时ms", "IO等待ms",
-    "D态总ms", "IO占比%", "读入文件数", "读入页数", "读入MiB", "未命名文件MiB", "备注",
+    "D态总ms", "IO占比%", "block读请求数(disk)", "block读MiB(disk)",
+    "其中预读MiB(disk)", "loop读请求数", "loop读MiB", "make_request(pid=RT)数",
+    "关联文件数(推测)", "未关联MiB", "未命名MiB", "备注",
 ]
 FILE_COLS = [
-    "trace文件", "包名", "文件名", "dev(major:minor)", "ino", "页数", "字节", "MiB",
-    "占本次读入%", "首次读入(相对首帧开始ms)",
+    "trace文件", "包名", "文件名(推测)", "dev(major:minor)", "ino", "请求数",
+    "读字节", "读MiB", "占本次block读%", "首次读(相对首帧开始ms)",
 ]
 TOP_COLS = [
-    "文件名", "总字节", "总MiB", "出现trace数", "出现占比%", "平均MiB", "最大MiB",
-    "最大所在trace", "涉及包名",
+    "文件名(推测)", "总字节", "总MiB", "出现trace数", "出现占比%", "平均MiB",
+    "最大MiB", "最大所在trace", "涉及包名",
 ]
 
 
@@ -121,7 +127,17 @@ def sdev_encode(major: int, minor: int) -> int:
 
 
 def sdev_decode(s_dev: int) -> tuple[int, int]:
+    # (s_dev >> 12) & ~0xFF 与 & 0xFFF00 对 32 位 dev 等价，block_rq dev 同用此解码
     return (s_dev >> 8) & 0xFFF, (s_dev & 0xFF) | ((s_dev >> 12) & ~0xFF)
+
+
+def _int(v) -> int:
+    return int(v) if pd.notna(v) else 0
+
+
+def _has_event(q, name: str) -> bool:
+    df = q(f"select count(*) as n from ftrace_event where name='{name}'")
+    return not df.empty and int(df["n"].iloc[0]) > 0
 
 
 def analyze(tp_bin: str, trace_path: str, meta: dict) -> dict:
@@ -136,7 +152,10 @@ def analyze(tp_bin: str, trace_path: str, meta: dict) -> dict:
         "pid": None, "RenderThread tid": None, "首帧slice": None,
         "首帧开始(相对启动开始ms)": None, "DrawFrames耗时ms": None,
         "IO等待ms": None, "D态总ms": None, "IO占比%": None,
-        "读入文件数": None, "读入页数": None, "读入MiB": None, "未命名文件MiB": None,
+        "block读请求数(disk)": None, "block读MiB(disk)": None,
+        "其中预读MiB(disk)": None, "loop读请求数": None, "loop读MiB": None,
+        "make_request(pid=RT)数": None, "关联文件数(推测)": None,
+        "未关联MiB": None, "未命名MiB": None,
     }
     files: list[dict] = []
 
@@ -248,72 +267,185 @@ def analyze(tp_bin: str, trace_path: str, meta: dict) -> dict:
         summary["D态总ms"] = round(d_ns / 1e6, 1)
         summary["IO占比%"] = round(io_ns / dur * 100, 1) if dur > 0 else None
 
-        # 3) 窗口内 RenderThread 读入 page cache 的文件
-        total_fm = q("select count(*) as n from ftrace_event "
-                     "where name='mm_filemap_add_to_page_cache'")
-        if total_fm.empty or int(total_fm["n"].iloc[0]) == 0:
-            notes.append("缺少 mm_filemap_add_to_page_cache，无法统计读入文件")
-            ev = pd.DataFrame(columns=["ts", "s_dev", "i_ino"])
-        else:
-            ev = q(
-                "select ts, "
-                "extract_arg(arg_set_id,'s_dev') as s_dev, "
-                "extract_arg(arg_set_id,'i_ino') as i_ino "
-                "from ftrace_event "
-                "where name='mm_filemap_add_to_page_cache' "
-                f"and utid={utid} and ts >= {w0} and ts < {w1}")
+        # 3) 窗口内 RenderThread 提交的 block 读请求
+        has_ins = _has_event(q, "block_rq_insert")
+        has_iss = _has_event(q, "block_rq_issue")
+        has_fm = _has_event(q, "mm_filemap_add_to_page_cache")
+        has_pc = _has_event(q, "tran_fs_pagecache_start")
+
+        if _has_event(q, "block_rq_mq_make_request"):
+            mk = q(
+                "select count(*) as n from ftrace_event "
+                "where name='block_rq_mq_make_request' "
+                f"and ts >= {w0} and ts < {w1} "
+                f"and extract_arg(arg_set_id,'pid') = {rt_tid}")
+            summary["make_request(pid=RT)数"] = int(mk["n"].iloc[0])
 
         # 文件名映射：整条 trace 的 tran_fs_pagecache_start
         name_map: dict[tuple[int, int], str] = {}
-        pc = q(
-            "select extract_arg(arg_set_id,'major_dev') as major_dev, "
-            "extract_arg(arg_set_id,'minor_dev') as minor_dev, "
-            "extract_arg(arg_set_id,'ino') as ino, "
-            "extract_arg(arg_set_id,'filebuf') as filebuf "
-            "from ftrace_event where name='tran_fs_pagecache_start'")
-        if pc.empty:
+        if not has_pc:
             notes.append("缺少 tran_fs_pagecache_start，文件名不可用")
         else:
+            pc = q(
+                "select extract_arg(arg_set_id,'major_dev') as major_dev, "
+                "extract_arg(arg_set_id,'minor_dev') as minor_dev, "
+                "extract_arg(arg_set_id,'ino') as ino, "
+                "extract_arg(arg_set_id,'filebuf') as filebuf "
+                "from ftrace_event where name='tran_fs_pagecache_start'")
             votes: dict[tuple[int, int], Counter] = {}
             for r in pc.itertuples(index=False):
                 if pd.isna(r.major_dev) or pd.isna(r.minor_dev) or pd.isna(r.ino):
                     continue
-                key = (sdev_encode(int(r.major_dev), int(r.minor_dev)), int(r.ino))
+                key = (sdev_encode(int(r.major_dev), int(r.minor_dev)),
+                       int(r.ino))
                 votes.setdefault(key, Counter())[str(r.filebuf)] += 1
             name_map = {k: c.most_common(1)[0][0] for k, c in votes.items()}
 
-        total_bytes = 0
-        unk_bytes = 0
-        if not ev.empty:
-            ev = ev.dropna(subset=["s_dev", "i_ino"])
-            ev["s_dev"] = ev["s_dev"].astype("int64")
-            ev["i_ino"] = ev["i_ino"].astype("int64")
-            grp = ev.groupby(["s_dev", "i_ino"]).agg(
-                pages=("ts", "size"), first_ts=("ts", "min")).reset_index()
-            for r in grp.itertuples(index=False):
-                nbytes = int(r.pages) * PAGE_BYTES
-                fname = name_map.get((r.s_dev, r.i_ino))
-                if fname is None:
-                    ma, mi = sdev_decode(r.s_dev)
-                    fname = f"<unknown dev={ma}:{mi} ino={r.i_ino}>"
-                    unk_bytes += nbytes
-                total_bytes += nbytes
+        if not has_ins and not has_iss:
+            notes.append("缺少 block_rq_* 事件，无法统计读请求")
+        else:
+            # 请求集合：RT 的读 insert + 无对应 insert 的读 issue（loop 直发）
+            sel = ", ".join(
+                f"extract_arg(arg_set_id,'{k}') as \"{k}\""
+                for k in ("dev", "sector", "nr_sector", "bytes", "rwbs"))
+            ins_keys: set[tuple[int, int]] = set()
+            reqs: list[tuple[int, int, int, str]] = []  # ts, dev, bytes, rwbs
+            for name in ("block_rq_insert", "block_rq_issue"):
+                if name == "block_rq_insert" and not has_ins:
+                    continue
+                if name == "block_rq_issue" and not has_iss:
+                    continue
+                for r in q(
+                        f"select ts, {sel} from ftrace_event "
+                        f"where name='{name}' and utid={utid} "
+                        f"and ts >= {w0} and ts < {w1}").itertuples(index=False):
+                    rw = str(r.rwbs)
+                    if "R" not in rw:
+                        continue
+                    dev, sector = _int(r.dev), _int(r.sector)
+                    if name == "block_rq_insert":
+                        ins_keys.add((dev, sector))
+                    elif (dev, sector) in ins_keys:
+                        continue
+                    nb = _int(r.bytes) if pd.notna(r.bytes) \
+                        else _int(r.nr_sector) * 512
+                    reqs.append((int(r.ts), dev, nb, rw))
+            reqs.sort(key=lambda x: x[0])
+
+            d_n = d_b = ra_b = l_n = l_b = 0
+            for _, dev, nb, rw in reqs:
+                if sdev_decode(dev)[0] == 7:
+                    l_n += 1
+                    l_b += nb
+                else:
+                    d_n += 1
+                    d_b += nb
+                    if "A" in rw:
+                        ra_b += nb
+            total_b = d_b + l_b
+            summary["block读请求数(disk)"] = d_n
+            summary["block读MiB(disk)"] = round(d_b / (1 << 20), 2)
+            summary["其中预读MiB(disk)"] = round(ra_b / (1 << 20), 2)
+            summary["loop读请求数"] = l_n
+            summary["loop读MiB"] = round(l_b / (1 << 20), 2)
+
+            # 4) 请求→文件关联（推测）：归属于之前最近的 mm_filemap add 批次
+            #    （批次 = 连续 add，页数最多的 (s_dev,ino) 为主文件），无批次时
+            #    回退到请求前 20ms 内最近一次 tran_fs_pagecache_start。
+            if not has_fm and not has_pc:
+                notes.append("缺少 mm_filemap_add_to_page_cache 与 "
+                             "tran_fs_pagecache_start，请求全部 <未关联>")
+            elif not has_fm:
+                notes.append("缺少 mm_filemap_add_to_page_cache，"
+                             "文件关联仅用 tran_fs_pagecache_start 回退")
+            lookback = w0 - LOOKBACK_NS
+            adds: list[tuple[int, int, int]] = []
+            if has_fm:
+                adf = q(
+                    "select ts, extract_arg(arg_set_id,'s_dev') as s_dev, "
+                    "extract_arg(arg_set_id,'i_ino') as i_ino "
+                    "from ftrace_event "
+                    "where name='mm_filemap_add_to_page_cache' "
+                    f"and utid={utid} and ts >= {lookback} and ts < {w1}")
+                adds = sorted(
+                    (int(r.ts), _int(r.s_dev), _int(r.i_ino))
+                    for r in adf.itertuples(index=False)
+                    if pd.notna(r.s_dev) and pd.notna(r.i_ino))
+            pc_rt: list[tuple[int, int, int]] = []
+            if has_pc:
+                prt = q(
+                    "select ts, extract_arg(arg_set_id,'major_dev') as major_dev, "
+                    "extract_arg(arg_set_id,'minor_dev') as minor_dev, "
+                    "extract_arg(arg_set_id,'ino') as ino "
+                    "from ftrace_event "
+                    "where name='tran_fs_pagecache_start' "
+                    f"and utid={utid} and ts >= {lookback} and ts < {w1}")
+                pc_rt = sorted(
+                    (int(r.ts),
+                     sdev_encode(int(r.major_dev), int(r.minor_dev)),
+                     int(r.ino))
+                    for r in prt.itertuples(index=False)
+                    if pd.notna(r.major_dev) and pd.notna(r.minor_dev)
+                    and pd.notna(r.ino))
+            pc_ts = [p[0] for p in pc_rt]
+
+            batch: Counter | None = None
+            batch_used = False
+            ai = 0
+            stats: dict[tuple[int, int] | None, list] = {}
+            for ts, _dev, nb, _rw in reqs:
+                while ai < len(adds) and adds[ai][0] <= ts:
+                    if batch is None or batch_used:
+                        batch = Counter()
+                        batch_used = False
+                    batch[(adds[ai][1], adds[ai][2])] += 1
+                    ai += 1
+                if batch:
+                    key = batch.most_common(1)[0][0]
+                else:
+                    i = bisect.bisect_left(pc_ts, ts)
+                    key = ((pc_rt[i - 1][1], pc_rt[i - 1][2])
+                           if i > 0 and pc_rt[i - 1][0] >= ts - LOOKBACK_NS
+                           else None)
+                st = stats.setdefault(key, [0, 0, ts])
+                st[0] += 1
+                st[1] += nb
+                st[2] = min(st[2], ts)
+                if batch is not None:
+                    batch_used = True
+
+            una_b = unk_b = 0
+            for key, (n, bts, fts) in stats.items():
+                if key is None:
+                    fname, dev_s, ino_v = "<未关联>", None, None
+                    una_b += bts
+                else:
+                    ma, mi = sdev_decode(key[0])
+                    dev_s, ino_v = f"{ma}:{mi}", key[1]
+                    fname = name_map.get(key)
+                    if fname is None:
+                        fname = f"<unknown dev={ma}:{mi} ino={key[1]}>"
+                        unk_b += bts
                 files.append({
-                    "文件名": fname,
-                    "dev(major:minor)": f"{sdev_decode(r.s_dev)[0]}:{sdev_decode(r.s_dev)[1]}",
-                    "ino": int(r.i_ino),
-                    "页数": int(r.pages),
-                    "字节": nbytes,
-                    "首次读入ns": int(r.first_ts) - w0,
+                    "文件名(推测)": fname,
+                    "dev(major:minor)": dev_s,
+                    "ino": ino_v,
+                    "请求数": n,
+                    "读字节": bts,
+                    "首次读ns": fts - w0,
                 })
+            file_total = sum(f["读字节"] for f in files)
+            if file_total != total_b:
+                raise AssertionError(
+                    f"文件明细读字节合计 {file_total} != block 读总字节 {total_b}")
             for f in files:
-                f["MiB"] = round(f["字节"] / (1 << 20), 2)
-                f["占本次读入%"] = round(f["字节"] / total_bytes * 100, 1) if total_bytes else 0.0
-                f["首次读入(相对首帧开始ms)"] = round(f.pop("首次读入ns") / 1e6, 1)
-        summary["读入文件数"] = len(files)
-        summary["读入页数"] = int(sum(f["页数"] for f in files))
-        summary["读入MiB"] = round(total_bytes / (1 << 20), 2)
-        summary["未命名文件MiB"] = round(unk_bytes / (1 << 20), 2)
+                f["读MiB"] = round(f["读字节"] / (1 << 20), 2)
+                f["占本次block读%"] = round(
+                    f["读字节"] / total_b * 100, 1) if total_b else 0.0
+                f["首次读(相对首帧开始ms)"] = round(f.pop("首次读ns") / 1e6, 1)
+            summary["关联文件数(推测)"] = sum(1 for k in stats if k is not None)
+            summary["未关联MiB"] = round(una_b / (1 << 20), 2)
+            summary["未命名MiB"] = round(unk_b / (1 << 20), 2)
 
         summary["备注"] = "；".join(notes)
         return {"summary": summary, "files": files}
@@ -397,16 +529,16 @@ def write_xlsx(results: list[dict], out_path: Path) -> None:
     if not files_df.empty:
         rank = {n: i for i, n in enumerate(sum_df["trace文件"])}
         files_df["_r"] = files_df["trace文件"].map(rank).fillna(1 << 30)
-        files_df = files_df.sort_values(["_r", "MiB"], ascending=[True, False])
+        files_df = files_df.sort_values(["_r", "读字节"], ascending=[True, False])
         files_df = files_df.drop(columns="_r")
 
     top_rows = []
     if not files_df.empty:
-        for fname, g in files_df.groupby("文件名", sort=False):
-            b = g["字节"].astype("int64")
+        for fname, g in files_df.groupby("文件名(推测)", sort=False):
+            b = g["读字节"].astype("int64")
             mx = g.loc[b.idxmax()]
             top_rows.append({
-                "文件名": fname,
+                "文件名(推测)": fname,
                 "总字节": int(b.sum()),
                 "总MiB": round(b.sum() / (1 << 20), 2),
                 "出现trace数": int(g["trace文件"].nunique()),
@@ -431,7 +563,7 @@ def write_xlsx(results: list[dict], out_path: Path) -> None:
 def main() -> int:
     ap = argparse.ArgumentParser(
         description="批量统计启动 trace 首帧 DrawFrames 窗口内 RenderThread 的 "
-                    "IO 等待与 page cache 读入文件，输出 xlsx")
+                    "IO 等待与 block_rq 读请求量（文件关联为推测），输出 xlsx")
     ap.add_argument("dir", help="trace 所在目录（只扫第一层）")
     ap.add_argument("-o", "--out", default=None,
                     help="输出 xlsx 路径（默认 <dir>\\startup_firstframe_io.xlsx）")
