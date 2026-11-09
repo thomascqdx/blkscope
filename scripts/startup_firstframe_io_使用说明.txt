@@ -1,0 +1,171 @@
+startup_firstframe_io.py 使用说明
+====================================
+
+一、用途
+--------
+批量分析一个目录下的应用启动 trace，统计每次启动「应用 RenderThread 的第一个
+DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算）这段时间内：
+
+  1. RenderThread 的 IO 等待耗时及其占首帧耗时的比例；
+  2. RenderThread 实际提交的 block 读请求量（block_rq_* 事件）；
+  3. 这些读请求读的是哪些文件（推测）、每个文件读了多少；
+  4. 汇总所有 trace，按读取量列出 TOP 文件。
+
+结果输出为一个 xlsx 表格。只统计 RenderThread 一个线程、只统计首帧这一个窗口，
+其他线程和窗口外的 IO 一律不计。
+
+
+二、准备工作（只需做一次）
+--------------------------
+1. 安装 Python 3（建议 3.10 及以上，已在 3.13 上验证），安装时勾选 "Add python.exe to PATH"。
+
+2. 安装依赖包（在 cmd 或 PowerShell 中执行）：
+
+     python -m pip install perfetto pandas openpyxl
+
+   公司网络需要代理时加 --proxy，例如：
+     python -m pip install perfetto pandas openpyxl --proxy http://<代理地址>:<端口>
+
+3. 下载 trace_processor_shell.exe（Perfetto 官方的 trace 解析程序，脚本依赖它解析 trace）。
+   必须使用 v57.2 版本（脚本按这个版本验证，其他版本的数据表可能有差异）：
+
+     下载地址：https://commondatastorage.googleapis.com/perfetto-luci-artifacts/v57.2/windows-amd64/trace_processor_shell.exe
+     文件大小：13617152 字节（约 13 MB）
+     SHA256  ：100334b6091596fbc97f872556849a5747bf47a7f7190c485ba8cea8d2409c7b
+
+   浏览器直接打开地址即可下载。下载后可以在 PowerShell 中校验文件是否完整：
+
+     Get-FileHash .\trace_processor_shell.exe -Algorithm SHA256
+
+   输出的 Hash 与上面的 SHA256 一致（不区分大小写）即可。
+   下载好后放到任意固定位置，例如 D:\tools\trace_processor_shell.exe。之后运行时不需要联网。
+
+   如果 Windows 提示「已阻止此文件」，在文件上右键 -> 属性 -> 勾选「解除锁定」-> 确定。
+
+
+三、运行
+--------
+基本命令（--tp 指定上一步下载的 trace_processor_shell.exe 路径）：
+
+  python startup_firstframe_io.py <trace目录> --tp D:\tools\trace_processor_shell.exe
+
+常用参数：
+  <trace目录>   必填，存放 trace 的目录（只扫描这一层，不进子目录）
+  --tp <路径>   trace_processor_shell.exe 的路径（必填，除非设置了下面的环境变量）
+  -o <文件>     输出 xlsx 路径，默认是 <trace目录>\startup_firstframe_io.xlsx
+  -j <N>        同时分析 N 个 trace，默认 1。每个 trace 会单独起一个解析进程，
+                内存较小的电脑建议保持 1~2
+
+不想每次写 --tp，可以设置环境变量 BLKSCOPE_TP 指向该 exe：
+  PowerShell 当前窗口：  $env:BLKSCOPE_TP = "D:\tools\trace_processor_shell.exe"
+  cmd 当前窗口：         set BLKSCOPE_TP=D:\tools\trace_processor_shell.exe
+  永久设置：             setx BLKSCOPE_TP "D:\tools\trace_processor_shell.exe"
+                         （setx 后需重新打开命令行窗口才生效）
+
+示例：
+  python startup_firstframe_io.py D:\traces\0925 --tp D:\tools\trace_processor_shell.exe -j 2
+  python startup_firstframe_io.py D:\traces\0925 -o D:\result\0925.xlsx
+
+运行时会在命令行逐个打印「[序号/总数] 开始 / 完成 文件名」，单个 trace 一般需要几十秒到
+两三分钟。某个 trace 出错不会中断整批，错误原因写在结果表的「备注」列。
+
+
+四、输入要求
+------------
+1. 文件类型：.zip（自动解压，取压缩包里最大的那个文件作为 trace）、.trace、.pftrace、
+   .perfetto-trace、.pb，以及没有后缀的文件。其他后缀（如 .txt、文本格式 .systrace）跳过。
+   只支持 Perfetto protobuf 格式的 trace，不支持文本 systrace。
+
+2. 文件名格式必须是：
+     StartUp_<包名>_<14位时间戳>_<启动耗时>ms_<序列号>_<启动类型>
+   例如：
+     StartUp_premium.gotube.adblock.utube_20261025124925_1593ms_sn18246156AB000334_8.trace
+   不符合格式的文件会在汇总表里标注「文件名不匹配」并跳过分析（脚本靠文件名里的包名找进程）。
+
+3. trace 需要包含以下数据，缺少时对应列为空并在备注说明：
+     - atrace（gfx / view）            -> DrawFrames slice
+     - sched 调度 + sched_blocked_reason -> IO 等待时长
+     - block_rq_insert / block_rq_issue  -> 读请求量
+     - mm_filemap_add_to_page_cache、传音定制 tran_fs_pagecache_start -> 推测文件及文件名
+     - block_rq_mq_make_request（传音定制，可选）-> 请求数交叉核对
+
+
+五、输出表格说明
+----------------
+xlsx 共三个 sheet：
+
+【汇总】每个 trace 一行，按 IO等待ms 从大到小排序。主要列：
+  启动类型码(文件名) / 启动类型(trace识别)
+                       文件名末位数字，以及 trace 自动识别出的 cold/warm/hot，可对照两者确认数字含义
+  启动耗时ms(文件名) / 启动耗时ms(trace识别)
+  pid / RenderThread tid
+  首帧slice            如 DrawFrames -1
+  首帧开始(相对启动开始ms)
+  DrawFrames耗时ms     首帧 DrawFrames slice 总耗时
+  IO等待ms             窗口内 RenderThread 处于 D 状态且为 IO 等待的累计时长
+  D态总ms              窗口内 RenderThread 所有 D 状态的累计时长（含非 IO 原因）
+  IO占比%              IO等待ms / DrawFrames耗时ms
+  block读请求数(disk) / block读MiB(disk)
+                       RenderThread 提交到物理磁盘的读请求个数与字节数（主要看这个）
+  其中预读MiB(disk)    上面磁盘读里属于预读（readahead）的部分
+  loop读请求数 / loop读MiB
+                       发到 loop 设备（APEX 镜像等）的读请求，单独列出
+  make_request(pid=RT)数
+                       交叉核对用，正常应与 block读请求数(disk) 基本一致
+  关联文件数(推测) / 未关联MiB / 未命名MiB
+                       推测出的文件个数；找不到文件的读量；找到文件但没有文件名的读量
+  备注                 降级、跳过、出错原因
+
+【文件明细】每个 trace 的首帧窗口内，各文件被读取的情况（同一 trace 内按读字节从大到小）：
+  文件名(推测)、dev(major:minor)、ino、请求数、读字节、读MiB、占本次block读%、
+  首次读(相对首帧开始ms)
+
+【TOP文件】所有 trace 按文件名合并，按总读取量从大到小排序：
+  文件名(推测)、总字节、总MiB、出现trace数、出现占比%、平均MiB、最大MiB、最大所在trace、涉及包名
+
+
+六、统计口径与注意事项
+----------------------
+1. 读取量只按 block_rq_* 读请求统计（rwbs 含 R）：RenderThread 上下文里的 block_rq_insert，
+   加上没有对应 insert、直接 block_rq_issue 的请求（loop 设备）。字节取事件的 bytes 字段。
+   这是实际从存储读取的量。系统分区若使用 EROFS 压缩，读进内存的数据会比这个值大 2~3 倍，属正常。
+
+2. 文件是「推测」的：block 请求本身只有扇区号，没有文件信息。脚本把每个请求归属到它之前
+   RenderThread 最近一批 mm_filemap_add_to_page_cache 中页数最多的文件（dev+ino），找不到时
+   退回到 20ms 内最近一次 tran_fs_pagecache_start；文件名来自 tran_fs_pagecache_start 的
+   filebuf，只有文件名、没有完整路径。个别文件的数值可能有偏差，适合看趋势和 TOP 排名，
+   不要当作精确值。
+
+3. 文件名显示为 <unknown dev=x:y ino=n> 表示找到了文件但 trace 中没有它的文件名
+   （例如 ino=0 一般是文件系统元数据或压缩缓存）；<未关联> 表示该请求找不到对应文件。
+
+4. TOP文件 按文件名合并：不同手机上同一个 .so 的 ino 不同，所以按名字合并；同名但不同路径
+   的文件也会被合并到一起。
+
+5. 进程定位：优先用 trace 自动识别的启动记录（android_startups）找到启动进程；识别不到时
+   按包名找拥有 RenderThread 且有 DrawFrames 的进程，备注会写「按进程名回退」。
+
+
+七、常见问题
+------------
+Q: 报错「trace_processor_shell 未找到」
+A: 没有用 --tp 指定路径，或 BLKSCOPE_TP 环境变量没设置 / 路径写错。
+
+Q: 报错 ModuleNotFoundError: No module named 'perfetto'（或 pandas / openpyxl）
+A: 依赖没装，或装到了另一个 Python 上。用同一个 python 执行：
+   python -m pip install perfetto pandas openpyxl
+
+Q: 备注「文件名不匹配 StartUp_ 命名规则」
+A: 文件名格式不对，按第四节第 2 条重命名后再跑。
+
+Q: 备注「RenderThread 上找不到 DrawFrames slice」
+A: trace 没抓 atrace gfx/view，或该次启动没有走到首帧绘制。
+
+Q: 备注「io_wait 缺失」
+A: trace 没开 sched_blocked_reason，IO等待ms 不可信，可参考 D态总ms。
+
+Q: 备注「缺少 block_rq_* 事件」
+A: 抓 trace 时没开启 block 相关 ftrace 事件，读取量无法统计。
+
+Q: 结果 xlsx 打不开或写入失败
+A: 先关闭 Excel 里已打开的同名结果文件再运行。
