@@ -40,3 +40,4 @@
 - 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
 - Release 构建：双击仓库根目录 `build_release.bat`（自动安装缺失的 PyInstaller，参数透传，双击时结束后暂停），等价于 `.\.venv\Scripts\python scripts\build_release.py`（`--skip-tests` / `--allow-dirty` / `--proxy`）—— 跑单测 + PyInstaller 单文件 exe（内置 trace_processor 与 web/）+ exe 冒烟，产出 `dist/blkscope-<版本>-windows-x64.zip` 与 `.sha256`。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。
+- 启动首帧 IO 批量统计：`.\.venv\Scripts\python scripts\startup_firstframe_io.py <目录> [-o out.xlsx] [--tp <trace_processor_shell>] [-j N]` —— 独立脚本（不 import blkscope），对目录内每个 StartUp_ 命名的 trace 取应用 RenderThread 第一个 DrawFrames slice 为窗口，统计窗口内该线程的 IO 等待耗时与读入 page cache 的文件/字节数，输出含「汇总 / 文件明细 / TOP文件」三个 sheet 的 xlsx。
