@@ -1,6 +1,15 @@
 startup_firstframe_io.py 使用说明
 ====================================
 
+获取方式（二选一）
+------------------
+方式 A（推荐）：使用 startup_firstframe_io.exe 单文件程序。
+  不需要安装 Python 和任何依赖，trace_processor_shell 也已内置在 exe 里，
+  拷到任何 Windows 电脑即可运行（首次运行解压内置组件会慢几秒，属正常）。
+
+方式 B：使用 Python 脚本 startup_firstframe_io.py。
+  需要按下面「二、准备工作」装 Python、依赖包并单独下载 trace_processor_shell.exe。
+
 一、用途
 --------
 批量分析一个目录下的应用启动 trace，统计每次启动「应用 RenderThread 的第一个
@@ -15,8 +24,8 @@ DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算�
 其他线程和窗口外的 IO 一律不计。
 
 
-二、准备工作（只需做一次）
---------------------------
+二、准备工作（方式 B 才需要，只需做一次）
+------------------------------------------
 1. 安装 Python 3（建议 3.10 及以上，已在 3.13 上验证），安装时勾选 "Add python.exe to PATH"。
 
 2. 安装依赖包（在 cmd 或 PowerShell 中执行）：
@@ -45,13 +54,18 @@ DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算�
 
 三、运行
 --------
-基本命令（--tp 指定上一步下载的 trace_processor_shell.exe 路径）：
+方式 A（exe）：trace_processor_shell 已内置，不需要 --tp 参数：
+
+  startup_firstframe_io.exe <trace目录>
+
+方式 B（Python 脚本）：--tp 指定上一步下载的 trace_processor_shell.exe 路径：
 
   python startup_firstframe_io.py <trace目录> --tp D:\tools\trace_processor_shell.exe
 
 常用参数：
   <trace目录>   必填，存放 trace 的目录（只扫描这一层，不进子目录）
-  --tp <路径>   trace_processor_shell.exe 的路径（必填，除非设置了下面的环境变量）
+  --tp <路径>   trace_processor_shell.exe 的路径（仅 Python 脚本方式需要；
+                exe 版已内置，也可用 --tp 或环境变量覆盖）
   -o <文件>     输出 xlsx 路径，默认是 <trace目录>\startup_firstframe_io.xlsx
   -j <N>        同时分析 N 个 trace，默认 1。每个 trace 会单独起一个解析进程，
                 内存较小的电脑建议保持 1~2
@@ -63,7 +77,10 @@ DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算�
   永久设置：             setx BLKSCOPE_TP "D:\tools\trace_processor_shell.exe"
                          （setx 后需重新打开命令行窗口才生效）
 
-示例：
+示例（exe 版把 python startup_firstframe_io.py 换成 startup_firstframe_io.exe，
+并去掉 --tp 参数）：
+
+  startup_firstframe_io.exe D:\traces\0925 -j 2
   python startup_firstframe_io.py D:\traces\0925 --tp D:\tools\trace_processor_shell.exe -j 2
   python startup_firstframe_io.py D:\traces\0925 -o D:\result\0925.xlsx
   python startup_firstframe_io.py D:\traces\0925 -w D:\traces\apps.txt -o D:\result\0925.xlsx
@@ -160,7 +177,8 @@ xlsx 共三个 sheet：
 七、常见问题
 ------------
 Q: 报错「trace_processor_shell 未找到」
-A: 没有用 --tp 指定路径，或 BLKSCOPE_TP 环境变量没设置 / 路径写错。
+A: exe 版一般不会出现（已内置）；Python 脚本方式下是没有用 --tp 指定路径，
+   或 BLKSCOPE_TP 环境变量没设置 / 路径写错。
 
 Q: 报错 ModuleNotFoundError: No module named 'perfetto'（或 pandas / openpyxl）
 A: 依赖没装，或装到了另一个 Python 上。用同一个 python 执行：

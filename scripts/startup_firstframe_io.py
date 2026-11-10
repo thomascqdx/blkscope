@@ -60,7 +60,7 @@ TOP_COLS = [
 
 
 def find_tp_binary(cli_arg: str | None) -> str:
-    """--tp > BLKSCOPE_TP > 仓库 tools/。"""
+    """--tp > BLKSCOPE_TP > 内嵌 tools/（PyInstaller 打包）> 仓库 tools/。"""
     if cli_arg:
         if os.path.isfile(cli_arg):
             return cli_arg
@@ -71,6 +71,11 @@ def find_tp_binary(cli_arg: str | None) -> str:
             return env
         raise FileNotFoundError(f"BLKSCOPE_TP 指向的文件不存在: {env}")
     name = "trace_processor_shell.exe" if sys.platform == "win32" else "trace_processor_shell"
+    meipass = getattr(sys, "_MEIPASS", None)  # PyInstaller 打包内嵌的 tp
+    if meipass:
+        cand = Path(meipass) / "tools" / name
+        if cand.is_file():
+            return str(cand)
     cand = REPO_TOOLS / name
     if cand.is_file():
         return str(cand)
