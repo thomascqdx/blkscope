@@ -12,6 +12,7 @@
 用法：
     .\\.venv\\Scripts\\python scripts\\startup_firstframe_io.py <目录>
         [-o out.xlsx] [--tp <trace_processor_shell 路径>] [-j N]
+        [-w <包名白名单文件>]
 """
 
 from __future__ import annotations
@@ -100,6 +101,22 @@ def parse_name(stem: str) -> dict | None:
     }
 
 
+def candidate_stems(path: Path) -> list[str]:
+    """文件名解析的候选 stem：zip 的成员 stem 优先，其次 zip stem（只读 infolist，
+    不解压）；过滤与分析共用，保证两处解析包名的顺序一致。"""
+    if path.suffix.lower() == ".zip":
+        try:
+            with zipfile.ZipFile(path) as zf:
+                members = [i for i in zf.infolist() if not i.is_dir()]
+        except zipfile.BadZipFile:
+            members = []
+        if members:
+            biggest = max(members, key=lambda i: i.file_size)
+            return [Path(biggest.filename).stem, path.stem]
+        return [path.stem]
+    return [path.stem]
+
+
 @contextmanager
 def trace_source(path: Path):
     """yield (trace_path | None, [候选 stem,...])。zip 取最大成员解压到临时目录。"""
@@ -109,17 +126,60 @@ def trace_source(path: Path):
             with zipfile.ZipFile(path) as zf:
                 members = [i for i in zf.infolist() if not i.is_dir()]
                 if not members:
-                    yield None, [path.stem]
+                    yield None, candidate_stems(path)
                     return
                 biggest = max(members, key=lambda i: i.file_size)
                 dest = Path(tmp) / Path(biggest.filename).name
                 with zf.open(biggest) as src, open(dest, "wb") as dst:
                     shutil.copyfileobj(src, dst)
-                yield str(dest), [Path(biggest.filename).stem, path.stem]
+                yield str(dest), candidate_stems(path)
         finally:
             shutil.rmtree(tmp, ignore_errors=True)
     else:
-        yield str(path), [path.stem]
+        yield str(path), candidate_stems(path)
+
+
+def load_whitelist(path: Path) -> list[str]:
+    """读取包名白名单：UTF-16 BOM 用 utf-16 解码，否则 utf-8-sig（兼容带 BOM 的
+    UTF-8）。`#` 起为注释，空行忽略，去重保序。"""
+    raw = path.read_bytes()
+    if raw.startswith(b"\xff\xfe") or raw.startswith(b"\xfe\xff"):
+        text = raw.decode("utf-16")
+    else:
+        text = raw.decode("utf-8-sig")
+    pkgs: list[str] = []
+    seen: set[str] = set()
+    for line in text.splitlines():
+        line = line.split("#", 1)[0].strip()
+        if line and line not in seen:
+            seen.add(line)
+            pkgs.append(line)
+    return pkgs
+
+
+def apply_whitelist(inputs: list[Path], whitelist: list[str]) -> list[Path]:
+    """按白名单过滤输入；不在名单或文件名解析不出包名的直接丢弃（不进 xlsx）。"""
+    wl = set(whitelist)
+    kept: list[Path] = []
+    hit: set[str] = set()
+    not_in = no_pkg = 0
+    for p in inputs:
+        meta = next((m for s in candidate_stems(p) if (m := parse_name(s))), None)
+        if meta is None:
+            no_pkg += 1
+        elif meta["pkg"] in wl:
+            kept.append(p)
+            hit.add(meta["pkg"])
+        else:
+            not_in += 1
+    skipped = len(inputs) - len(kept)
+    print(f"白名单 {len(whitelist)} 个包，匹配 {len(kept)} 个 trace，"
+          f"跳过 {skipped} 个（不在白名单 {not_in} 个 / 文件名不匹配 {no_pkg} 个）",
+          file=sys.stderr)
+    for pkg in whitelist:
+        if pkg not in hit:
+            print(f"白名单包无 trace: {pkg}", file=sys.stderr)
+    return kept
 
 
 def sdev_encode(major: int, minor: int) -> int:
@@ -569,6 +629,8 @@ def main() -> int:
                     help="输出 xlsx 路径（默认 <dir>\\startup_firstframe_io.xlsx）")
     ap.add_argument("--tp", default=None, help="trace_processor_shell 路径")
     ap.add_argument("-j", type=int, default=1, help="并行 trace 数（默认 1）")
+    ap.add_argument("-w", "--whitelist", default=None,
+                    help="包名白名单文件：每行一个包名（# 注释），只处理这些包的 trace")
     args = ap.parse_args()
     sys.stdout.reconfigure(encoding="utf-8")
     sys.stderr.reconfigure(encoding="utf-8")
@@ -577,6 +639,16 @@ def main() -> int:
     if not d.is_dir():
         print(f"目录不存在: {d}", file=sys.stderr)
         return 2
+    whitelist = None
+    if args.whitelist:
+        try:
+            whitelist = load_whitelist(Path(args.whitelist))
+        except Exception as e:
+            print(f"读取白名单失败 {args.whitelist}: {e}", file=sys.stderr)
+            return 2
+        if not whitelist:
+            print(f"白名单文件无有效包名: {args.whitelist}", file=sys.stderr)
+            return 2
     tp_bin = find_tp_binary(args.tp)
     out_path = Path(args.out) if args.out else d / "startup_firstframe_io.xlsx"
 
@@ -584,6 +656,11 @@ def main() -> int:
     if not inputs:
         print("目录中没有可处理的 trace 文件", file=sys.stderr)
         return 1
+    if whitelist is not None:
+        inputs = apply_whitelist(inputs, whitelist)
+        if not inputs:
+            print("白名单过滤后没有可处理的 trace", file=sys.stderr)
+            return 1
     print(f"共 {len(inputs)} 个候选文件, tp={tp_bin}", file=sys.stderr)
 
     results: list[dict] = [None] * len(inputs)  # type: ignore

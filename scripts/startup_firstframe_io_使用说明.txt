@@ -55,6 +55,7 @@ DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算�
   -o <文件>     输出 xlsx 路径，默认是 <trace目录>\startup_firstframe_io.xlsx
   -j <N>        同时分析 N 个 trace，默认 1。每个 trace 会单独起一个解析进程，
                 内存较小的电脑建议保持 1~2
+  -w <文件>     包名白名单（可选）：只分析这些应用的 trace，格式见下方说明
 
 不想每次写 --tp，可以设置环境变量 BLKSCOPE_TP 指向该 exe：
   PowerShell 当前窗口：  $env:BLKSCOPE_TP = "D:\tools\trace_processor_shell.exe"
@@ -65,9 +66,19 @@ DrawFrames <帧ID> slice」（即首帧绘制，帧ID 为 -1 或其他值都算�
 示例：
   python startup_firstframe_io.py D:\traces\0925 --tp D:\tools\trace_processor_shell.exe -j 2
   python startup_firstframe_io.py D:\traces\0925 -o D:\result\0925.xlsx
+  python startup_firstframe_io.py D:\traces\0925 -w D:\traces\apps.txt -o D:\result\0925.xlsx
 
 运行时会在命令行逐个打印「[序号/总数] 开始 / 完成 文件名」，单个 trace 一般需要几十秒到
 两三分钟。某个 trace 出错不会中断整批，错误原因写在结果表的「备注」列。
+
+白名单文件（-w，可选）：
+  只分析文件名里包名与白名单一致的 trace，按包名精确匹配（区分大小写）。
+  文件格式：
+    - 每行一个包名，如 com.opera.mini.native；
+    - 「#」及其后的内容是注释，空行忽略；
+    - UTF-8（含带 BOM）和 UTF-16 编码都可以，用记事本保存即可。
+  不在白名单的 trace 不会出现在结果 xlsx 里，运行时只在命令行打印跳过了几个；
+  白名单里没有匹配到任何 trace 的包名，也会在命令行逐个列出。
 
 
 四、输入要求
