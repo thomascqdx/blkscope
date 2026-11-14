@@ -5,7 +5,7 @@ Steps: preflight -> clean-tree check -> fetch/verify trace_processor ->
 unit tests -> PyInstaller onefile build (bundles trace_processor and web/)
 -> smoke test the built exe (--version + fixture -> HTML) -> stage
 dist/blkscope-<ver>-<plat>-<arch>/ (exe + README + LICENSE + manual) ->
-zip + .sha256.
+zip + .sha256 -> stamp dist/perfbox-tool.json for perfbox.
 
 Usage:
     .\\.venv\\Scripts\\python scripts\\build_release.py [--skip-tests] [--allow-dirty] [--proxy URL]
@@ -201,6 +201,18 @@ def package(exe: str, rel: str) -> str:
     return zip_path
 
 
+def stamp_manifest(zip_path: str) -> str:
+    step("stamping dist/perfbox-tool.json")
+    out = os.path.join(DIST_DIR, "perfbox-tool.json")
+    run([sys.executable,
+         os.path.join(ROOT, "scripts", "stamp_manifest.py"),
+         "--version-from",
+         os.path.join(SRC, "blkscope", "__init__.py"),
+         "--artifact", zip_path,
+         "--out", out], cwd=ROOT)
+    return out
+
+
 def main() -> None:
     ap = argparse.ArgumentParser(description=__doc__)
     ap.add_argument("--skip-tests", action="store_true",
@@ -218,6 +230,7 @@ def main() -> None:
     exe = build_exe()
     smoke(exe, ver)
     zip_path = package(exe, rel)
+    manifest = stamp_manifest(zip_path)
 
     step("summary")
     print(f"version : {ver}")
@@ -225,6 +238,7 @@ def main() -> None:
     print(f"exe     : {exe} ({os.path.getsize(exe) / 1e6:.1f} MB)")
     print(f"zip     : {zip_path} ({os.path.getsize(zip_path) / 1e6:.1f} MB)")
     print(f"sha256  : {sha256(zip_path)}")
+    print(f"manifest: {manifest}")
 
 
 if __name__ == "__main__":

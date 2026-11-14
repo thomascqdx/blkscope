@@ -103,7 +103,7 @@ def _open(path: str) -> None:
         webbrowser.open("file://" + os.path.abspath(path))
 
 
-def main(argv=None) -> int:
+def build_parser() -> argparse.ArgumentParser:
     ap = argparse.ArgumentParser(
         prog="blkscope",
         description="Android/Perfetto 块设备 IO trace -> 单文件 HTML 分析页")
@@ -118,7 +118,11 @@ def main(argv=None) -> int:
                     help="输出 <name>.payload.json 而非 HTML")
     ap.add_argument("--open", action="store_true",
                     help="生成后用默认浏览器打开每个 HTML")
-    args = ap.parse_args(argv)
+    return ap
+
+
+def main(argv=None) -> int:
+    args = build_parser().parse_args(argv)
 
     from .loader import resolve_inputs
 

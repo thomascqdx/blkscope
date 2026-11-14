@@ -1,0 +1,49 @@
+{
+  "schema": 1,
+  "id": "blkscope",
+  "title": "块设备 IO 分析",
+  "summary": "分析 Perfetto trace 中的块设备 IO，每个 trace 输出一份 HTML 报告",
+  "domain": "io",
+  "version": "",
+  "tag": "",
+  "artifact": {
+    "name": "",
+    "kind": "zip",
+    "size": 0,
+    "sha256": "",
+    "entry": ["blkscope.exe"]
+  },
+  "commands": [
+    {
+      "id": "analyze",
+      "title": "分析 trace",
+      "summary": "每个输入 trace 生成一份交互式 HTML 报告",
+      "kind": "job",
+      "params": [
+        {
+          "name": "inputs",
+          "label": "Trace",
+          "help": "Perfetto trace、systrace 文本、zip，或包含它们的目录（只扫描第一层）",
+          "type": "path",
+          "accept": ["file", "dir"],
+          "multiple": true,
+          "required": true,
+          "extensions": [".zip", ".trace", ".pftrace", ".perfetto-trace", ".systrace"]
+        },
+        {
+          "name": "json",
+          "label": "输出 JSON 数据",
+          "help": "输出 <name>.payload.json，不生成 HTML",
+          "type": "boolean",
+          "flag": "--json",
+          "advanced": true
+        }
+      ],
+      "output": {"flag": "-o", "kind": "dir"},
+      "outputs": [
+        {"glob": "*.html", "role": "report", "primary": true},
+        {"glob": "*.payload.json", "role": "data"}
+      ]
+    }
+  ]
+}

@@ -38,6 +38,7 @@
 - 样例校验：`.\.venv\Scripts\python scripts/validate_sample.py`（加载样例约 1~2 分钟），检查配对率、总字节数、文件关联率等。
 - 生成 HTML：`.\.venv\Scripts\blkscope <zip|trace|目录> -o out`（支持多输入、目录（只扫第一层）与 `--open` / `--json` / `--version`）。
 - 前端冒烟：`.\.venv\Scripts\python scripts/ui_smoke.py <html>` —— 无头 Edge 跑全量交互 + 截图到 `work/ui/` + 独立 Python 统计交叉校验；控制台报错即失败。空/降级 payload 用 `--load-only`（只加载并检查控制台无报错）。
-- Release 构建：双击仓库根目录 `build_release.bat`（自动安装缺失的 PyInstaller，参数透传，双击时结束后暂停），等价于 `.\.venv\Scripts\python scripts\build_release.py`（`--skip-tests` / `--allow-dirty` / `--proxy`）—— 跑单测 + PyInstaller 单文件 exe（内置 trace_processor 与 web/）+ exe 冒烟，产出 `dist/blkscope-<版本>-windows-x64.zip` 与 `.sha256`。
+- Release 构建：双击仓库根目录 `build_release.bat`（自动安装缺失的 PyInstaller，参数透传，双击时结束后暂停），等价于 `.\.venv\Scripts\python scripts\build_release.py`（`--skip-tests` / `--allow-dirty` / `--proxy`）—— 跑单测 + PyInstaller 单文件 exe（内置 trace_processor 与 web/）+ exe 冒烟，产出 `dist/blkscope-<版本>-windows-x64.zip` 与 `.sha256`，并用 `scripts/stamp_manifest.py` 写出 `dist/perfbox-tool.json`。
+  - 发 GitHub Release 时同时上传 `dist/blkscope-<版本>-windows-x64.zip` 和 `dist/perfbox-tool.json` 两个附件。仓库根的 `perfbox-tool.json` 是清单模板，由 `tests/test_manifest_contract.py` 对照 `build_parser()` 守护：命令行有改动时模板必须在同一个提交里同步更新。
 - `research/` 是需求调研阶段的探查脚本，仅供参考。
 - 启动首帧 IO 批量统计：`.\.venv\Scripts\python scripts\startup_firstframe_io.py <目录> [-o out.xlsx] [--tp <trace_processor_shell>] [-j N] [-w <包名白名单>]` —— 独立脚本（不 import blkscope），对目录内每个 StartUp_ 命名的 trace 取应用 RenderThread 第一个 DrawFrames slice 为窗口，统计窗口内该线程的 IO 等待耗时与 block_rq 读请求量（disk/loop，文件关联为推测），输出含「汇总 / 文件明细 / TOP文件」三个 sheet 的 xlsx。分发给无 Python 环境的同事用 `.\.venv\Scripts\python scripts\build_firstframe_io.py` 打出单文件 `dist/startup_firstframe_io.exe`（内置 pandas/openpyxl/perfetto 与 tools/ 里的 trace_processor_shell，免 --tp）。
