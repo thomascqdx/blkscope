@@ -1,0 +1,104 @@
+<!doctype html>
+<!-- Dev/test harness for web/model/extract.js: loads the engine scripts,
+     boots the Perfetto wasm engine from /tools/wasm/, loads a chosen trace,
+     runs BLK.extract.extractAll and puts a digest of the result on
+     window.__result (or the error on window.__error).
+     The digest spec is mirrored in tests/_web_helpers.py. -->
+<html>
+<head><meta charset="utf-8"><title>blkscope extract check</title></head>
+<body>
+<input type="file" id="file">
+<pre id="log"></pre>
+<script src="/web/engine/proto.js"></script>
+<script src="/web/engine/tp_client.js"></script>
+<script src="/web/engine/bootstrap.js"></script>
+<script src="/web/model/extract.js"></script>
+<script>
+'use strict';
+window.__result = null;
+window.__error = null;
+
+function ser(v) {
+  if (v === null || v === undefined) return '\x00';
+  if (typeof v === 'number') {
+    if (Number.isInteger(v)) return String(v);
+    var s = v.toPrecision(17);
+    // match Python %.17g: strip trailing mantissa zeros, un-pad exponent
+    s = s.replace(/(\.\d*?)0+(e|$)/, '$1$2').replace(/\.(e|$)/, '$1');
+    s = s.replace(/e([+-])0+(\d+)$/, 'e$1$2');
+    return s;
+  }
+  return String(v);
+}
+
+function columnDigest(values) {
+  var nulls = 0, total = 0.0, h = 2166136261;
+  var enc = new TextEncoder();
+  var parts = new Array(values.length);
+  for (var i = 0; i < values.length; i++) {
+    var v = values[i];
+    if (v === null || v === undefined) nulls++;
+    else if (typeof v === 'number') total += v;
+    var s = ser(v);
+    parts[i] = s;
+    var bytes = enc.encode(s + '\x1f');
+    for (var k = 0; k < bytes.length; k++) {
+      h ^= bytes[k];
+      h = Math.imul(h, 16777619) >>> 0;
+    }
+  }
+  var fnv = ('0000000' + h.toString(16)).slice(-8);
+  return {
+    nulls: nulls, sum: total,
+    first50: parts.slice(0, 50), last50: parts.slice(-50),
+    fnv: fnv,
+  };
+}
+
+function tableDigest(t) {
+  var rows = t.columns.length ? t.data[t.columns[0]].length : 0;
+  var cols = {};
+  for (const c of t.columns) cols[c] = columnDigest(t.data[c]);
+  return { rows: rows, columns: t.columns, cols: cols };
+}
+
+function extractDigest(ex) {
+  var tables = {};
+  for (const a of Object.keys(ex.tables)) tables[a] = tableDigest(ex.tables[a]);
+  return {
+    tables: tables, device: ex.device, stats: ex.stats,
+    t_min: ex.t_min, t_max: ex.t_max, trace_start: ex.trace_start,
+  };
+}
+
+async function __run(file) {
+  const tStart = performance.now();
+  const eng = await BLK.engine.start({
+    engineUrl: '/tools/wasm/engine_bundle.js',
+    wasmUrl32: '/tools/wasm/trace_processor.wasm',
+    wasmUrl64: '/tools/wasm/trace_processor_memory64.wasm',
+  });
+  const tInit = performance.now();
+  const cli = new BLK.TpClient(eng.port);
+  eng.onError(function (e) { cli.fail(e); });
+  await cli.loadFile(file);
+  const tLoad = performance.now();
+  const ex = await BLK.extract.extractAll(cli);
+  const tExtract = performance.now();
+  window.__result = {
+    memory64: eng.memory64,
+    traceLoadMs: tLoad - tInit,
+    extractMs: tExtract - tLoad,
+    digest: extractDigest(ex),
+  };
+  eng.terminate();
+}
+
+document.getElementById('file').addEventListener('change', function (e) {
+  __run(e.target.files[0]).catch(function (err) {
+    window.__error = String((err && err.stack) || err);
+  });
+});
+</script>
+</body>
+</html>

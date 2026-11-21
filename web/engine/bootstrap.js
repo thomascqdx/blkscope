@@ -80,9 +80,24 @@
     worker.postMessage({ port: channel.port2, wasmModule },
       [channel.port2]);
 
+    const errorCbs = [];
+    worker.addEventListener('error', function (e) {
+      const err = new Error(
+        'engine worker error: ' + (e.message || 'unknown'));
+      errorCbs.forEach(function (cb) { cb(err); });
+    });
+    worker.addEventListener('messageerror', function () {
+      const err = new Error('engine worker messageerror');
+      errorCbs.forEach(function (cb) { cb(err); });
+    });
+    if (opts.onError) errorCbs.push(opts.onError);
+
     return {
       port: channel.port1,
       memory64,
+      /* Register a callback for engine worker failure (wasm abort / OOM).
+       * Callers should forward it to client.fail(err). */
+      onError(cb) { errorCbs.push(cb); },
       terminate() {
         worker.terminate();
         if (blobUrl) URL.revokeObjectURL(blobUrl);

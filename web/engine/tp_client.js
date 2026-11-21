@@ -76,6 +76,7 @@
     }
 
     _drop(n) {
+      this.len -= n;
       while (n > 0) {
         const c = this.chunks[0];
         if (c.length <= n) {
@@ -109,19 +110,7 @@
       }
       if (this.len < i + len) return null;
       const frame = this._flat(i + len).subarray(i);
-      // consume
-      let n = i + len;
-      while (n > 0) {
-        const c = this.chunks[0];
-        if (c.length <= n) {
-          n -= c.length;
-          this.chunks.shift();
-        } else {
-          this.chunks[0] = c.subarray(n);
-          n = 0;
-        }
-      }
-      this.len -= i + len;
+      this._drop(i + len);
       return frame;
     }
   }
@@ -196,6 +185,13 @@
     _failAll(err) {
       this._fatal = this._fatal || err;
       for (const p of this._pending.splice(0)) p.reject(this._fatal);
+    }
+
+    /* Public: permanently fail the client (e.g. the engine worker died).
+     * Rejects all pending requests and every later call. */
+    fail(err) {
+      this._failAll(err instanceof Error ? err
+        : new Error('tp client failed: ' + err));
     }
 
     _onBytes(u8) {

@@ -14,26 +14,13 @@ sample trace are missing.
 """
 
 import base64
-import functools
-import http.server
 import json
 import os
-import threading
 
 import pytest
 
-ROOT = os.path.dirname(os.path.dirname(os.path.abspath(__file__)))
-TOOLS = os.path.join(ROOT, "tools")
-WASM_DIR = os.path.join(TOOLS, "wasm")
-WORK = os.path.join(ROOT, "work")
-SAMPLE = os.path.join(
-    ROOT, "samples",
-    "StartUp_com.opera.mini.native_20261010011312_2477ms"
-    "_sn1824615693000400_7.zip")
-
-TP_EXE = os.path.join(TOOLS, "trace_processor_shell.exe")
-WASM_FILES = ["engine_bundle.js", "trace_processor.wasm",
-              "trace_processor_memory64.wasm"]
+from _web_helpers import (ROOT, SAMPLE, WASM_DIR, WORK, missing_paths,
+                          run_page, start_httpd)
 
 QUERIES = [
     "select name, count(*) c from ftrace_event group by name order by name",
@@ -55,13 +42,8 @@ def _bio_make_sql():
 
 playwright = pytest.importorskip("playwright.sync_api")
 
-
-def _missing(*paths):
-    return [p for p in paths if not os.path.exists(p)]
-
-
 pytestmark = pytest.mark.skipif(
-    _missing(TP_EXE, SAMPLE, *[os.path.join(WASM_DIR, f) for f in WASM_FILES]),
+    bool(missing_paths()),
     reason="missing tools/wasm, trace_processor_shell or sample trace")
 
 
@@ -106,18 +88,12 @@ def native_tp():
 
 @pytest.fixture(scope="module")
 def httpd():
-    """Serve the repo root over localhost so the page can fetch /tools/wasm."""
-    class Quiet(http.server.SimpleHTTPRequestHandler):
-        def log_message(self, *args):
-            pass
-
-    handler = functools.partial(Quiet, directory=ROOT)
-    srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
-    t = threading.Thread(target=srv.serve_forever, daemon=True)
-    t.start()
-    yield f"http://127.0.0.1:{srv.server_address[1]}"
-    srv.shutdown()
-    t.join()
+    srv, t, base = start_httpd()
+    try:
+        yield base
+    finally:
+        srv.shutdown()
+        t.join()
 
 
 @pytest.fixture(scope="module")
@@ -131,23 +107,11 @@ def browser():
             b.close()
 
 
-def _run_page(page, url, queries, timeout=600_000):
-    page.goto(url)
-    page.evaluate("window.__queries = " + json.dumps(queries))
-    page.set_input_files("#file", SAMPLE)
-    page.wait_for_function(
-        "window.__result !== null || window.__error !== null",
-        timeout=timeout)
-    err = page.evaluate("window.__error")
-    assert err is None, f"page error: {err}"
-    return page.evaluate("window.__result")
-
-
 def test_wasm_engine_matches_native(native_tp, httpd, browser):
     sql_e = _bio_make_sql()
     page = browser.new_page()
-    result = _run_page(page, f"{httpd}/tests/web/engine_check.html",
-                       QUERIES + [sql_e])
+    result = run_page(page, f"{httpd}/tests/web/engine_check.html",
+                      QUERIES + [sql_e])
     page.close()
 
     assert result["memory64"] is True, "memory64 wasm not used in Edge"
@@ -216,6 +180,7 @@ async function __run(file) {{
     engineSource: ENGINE_SOURCE, wasmBytes32: wasm, wasmBytes64: wasm,
   }});
   const cli = new BLK.TpClient(eng.port);
+  eng.onError(function (e) {{ cli.fail(e); }});
   await cli.loadFile(file);
   const results = {{}};
   for (const sql of (window.__queries || [])) {{
@@ -242,7 +207,7 @@ def test_wasm_engine_offline_file_url(native_tp, browser):
     path = _offline_html_path()
     sql = QUERIES[0]
     page = browser.new_page()
-    result = _run_page(page, "file:///" + path.replace("\\", "/"), [sql])
+    result = run_page(page, "file:///" + path.replace("\\", "/"), [sql])
     page.close()
     assert result["memory64"] is True
     _assert_same(_rows(native_tp, sql), result["results"][sql], sql)
