@@ -1,0 +1,87 @@
+/* site.css: landing / progress / error screens (design 8). */
+
+#site {
+  position: fixed; inset: 0; z-index: 90; overflow: auto;
+  background: #1e1e1e; display: flex; align-items: flex-start;
+  justify-content: center; user-select: none;
+}
+#landcard {
+  width: 560px; max-width: 92vw; margin: 8vh 0 40px; padding: 28px 32px;
+  background: #262626; border: 1px solid #3a3a3a; border-radius: 8px;
+}
+#sitename { font-size: 22px; color: #fff; font-weight: 600; }
+#sitever { color: #888; font-size: 11px; margin-top: 2px; }
+.tagline { color: #aaa; margin: 6px 0 18px; }
+
+#dropzone {
+  border: 2px dashed #4a4a4a; border-radius: 8px; padding: 34px 16px;
+  text-align: center; cursor: pointer; transition: border-color .15s,
+  background .15s;
+}
+#dropzone.hover { border-color: #6db3f2; background: rgba(109,179,242,.08); }
+.dz-big { color: #d8d8d8; font-size: 14px; }
+.dz-or { color: #777; margin: 10px 0; font-size: 11px; }
+#pickbtn {
+  height: 26px; padding: 0 14px; background: #3a3a3a; color: #ddd;
+  border: 1px solid #555; border-radius: 3px; cursor: pointer;
+  font-size: 12px;
+}
+#pickbtn:hover { background: #4a4a4a; }
+
+#landcard .notes { margin: 18px 0 0 18px; color: #8a8a8a; font-size: 11px; }
+#landcard .notes li { margin: 3px 0; }
+
+#chooser { margin-top: 18px; }
+.ch-title { color: #cfcfcf; margin-bottom: 8px; }
+#chlist .ch-item {
+  display: flex; justify-content: space-between; align-items: center;
+  width: 100%; text-align: left; padding: 6px 10px; margin: 4px 0;
+  background: #303030; color: #ddd; border: 1px solid #4a4a4a;
+  border-radius: 4px; cursor: pointer; font-size: 12px;
+}
+#chlist .ch-item:hover { background: #3a3a3a; border-color: #6db3f2; }
+#chlist .ch-item .sz { color: #888; font-size: 11px; margin-left: 12px;
+  white-space: nowrap; }
+
+#progress { margin-top: 18px; }
+#pgfile { color: #cfcfcf; margin-bottom: 10px; word-break: break-all; }
+#pgwarn {
+  color: #e8b45a; background: #4a3218; border-radius: 4px;
+  padding: 5px 8px; margin-bottom: 10px; font-size: 11px;
+}
+.stage {
+  display: flex; align-items: baseline; gap: 10px; padding: 6px 8px;
+  border-left: 3px solid #3a3a3a; margin: 4px 0; color: #888;
+}
+.stage.active { border-left-color: #6db3f2; color: #d8d8d8; }
+.stage.done { border-left-color: #4a8a4a; color: #9a9a9a; }
+.stage .st-name { flex: none; width: 140px; }
+.stage .st-info { flex: 1; color: #8a9ab5; font-size: 11px; }
+.stage.done .st-info { color: #777; }
+.stage .st-time { flex: none; color: #777; font-size: 11px;
+  font-variant-numeric: tabular-nums; }
+
+#siteerr { margin-top: 18px; }
+#errmsg { color: #f0c069; font-size: 13px; margin-bottom: 6px; }
+#errhint { color: #aaa; font-size: 11px; margin-bottom: 10px; }
+#errdet { margin: 8px 0; color: #888; font-size: 11px; }
+#errdet summary { cursor: pointer; }
+#errstack {
+  margin-top: 6px; padding: 8px; background: #181818; border-radius: 4px;
+  color: #b88; font-size: 10px; white-space: pre-wrap; word-break: break-all;
+  max-height: 180px; overflow: auto; user-select: text;
+}
+#errback {
+  height: 24px; padding: 0 12px; background: #3a3a3a; color: #ddd;
+  border: 1px solid #555; border-radius: 3px; cursor: pointer;
+  font-size: 11px;
+}
+#errback:hover { background: #4a4a4a; }
+
+/* topbar buttons injected by site.js after a site analysis renders */
+.sitebtn {
+  height: 22px; padding: 0 8px; background: #3a3a3a; color: #ddd;
+  border: 1px solid #555; border-radius: 3px; cursor: pointer;
+  font-size: 11px; white-space: nowrap;
+}
+.sitebtn:hover { background: #4a4a4a; }

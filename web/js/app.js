@@ -155,9 +155,12 @@ IOT.app = (function () {
     },
   };
 
-  async function boot() {
+  /* start(payload?): render a report. With no argument the embedded
+   * #payload element is decoded (CLI report); a passed object is the
+   * site analysis result (design 8). */
+  async function start(payload) {
     try {
-      await IOT.data.load();
+      await IOT.data.load(payload);
       IOT.ts.init(IOT.data.D.dur);
       IOT.tracks.build();
       header();
@@ -176,7 +179,18 @@ IOT.app = (function () {
     }
   }
 
+  function boot() {
+    const el = document.getElementById('payload');
+    const embedded = el && el.textContent.trim();
+    if (!embedded && IOT.site && typeof IOT.site.init === 'function') {
+      IOT.site.init(start);            // landing screen calls start(payload)
+    } else {
+      start();
+    }
+  }
+
   if (document.readyState === 'loading')
     document.addEventListener('DOMContentLoaded', boot);
   else boot();
+  return { start };
 })();

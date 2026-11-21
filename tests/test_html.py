@@ -24,6 +24,7 @@ def _make_web(tmp_path, manual=None):
     (web / "index.html").write_text(
         "<html><title>__TITLE__</title>"
         '<meta name="generator" content="__GENERATOR__">'
+        "<!--__SITE__-->"
         "<style>/*__CSS__*/</style>"
         "<script>/*__JS__*/</script>"
         "<script type='application/octet-stream' "
@@ -44,6 +45,7 @@ def test_render_replaces_placeholders_and_escapes(tmp_path, monkeypatch):
     assert "__TITLE__" not in out and "__PAYLOAD__" not in out
     assert "/*__CSS__*/" not in out and "/*__JS__*/" not in out
     assert "__GENERATOR__" not in out
+    assert "<!--__SITE__-->" not in out   # reports carry no landing markup
     assert f'content="blkscope {__version__}"' in out
     assert "x&lt;y&gt;&quot;z&quot;" in out       # title html-escaped
     assert ".a{color:red}" in out and ".b{color:blue}" in out

@@ -1,12 +1,13 @@
-"""Single-file HTML builder (design 5.1 / 5.6).
+"""Single-file HTML builder (design 5.1 / 5.6 / 8).
 
 web/index.html is the template; placeholders __TITLE__, __GENERATOR__,
-/*__CSS__*/, /*__JS__*/, __PAYLOAD__ and <!--__MANUAL__--> are replaced with
-the escaped trace name, the generator string (blkscope <version>), the
-manifest-ordered CSS/JS inline contents, the base64+gzip payload and the
-rendered user manual. The manual comes from the manifest's optional "manual"
-entry (a Markdown file converted by mdlite) and is substituted LAST so
-literal placeholder text inside the manual survives.
+/*__CSS__*/, /*__JS__*/, __PAYLOAD__, <!--__SITE__--> and <!--__MANUAL__-->
+are replaced with the escaped trace name, the generator string
+(blkscope <version>), the manifest-ordered CSS/JS inline contents, the
+base64+gzip payload, the site landing markup (empty for CLI reports) and
+the rendered user manual. The manual comes from the manifest's optional
+"manual" entry (a Markdown file converted by mdlite) and is substituted
+LAST so literal placeholder text inside the manual survives.
 web/ lookup order: BLKSCOPE_WEB env > sys._MEIPASS (PyInstaller) > repo root.
 """
 
@@ -37,34 +38,40 @@ def web_dir() -> str:
     return cand
 
 
-def render_html(payload_b64: str, name: str) -> str:
-    """Inline web assets + payload -> standalone HTML text."""
-    wdir = web_dir()
+def load_manifest(wdir: str) -> dict:
     with open(os.path.join(wdir, "manifest.json"), encoding="utf-8") as f:
-        manifest = json.load(f)
-    with open(os.path.join(wdir, "index.html"), encoding="utf-8") as f:
-        tpl = f.read()
+        return json.load(f)
 
-    def concat(rel_paths, escape):
-        parts = []
-        for rel in rel_paths:
-            with open(os.path.join(wdir, rel), encoding="utf-8") as f:
-                parts.append(escape(f.read()))
-        return "\n".join(parts)
 
-    css = concat(manifest.get("css", []), lambda s: s)
-    js = concat(manifest.get("js", []),
-                lambda s: s.replace("</script", "<\\/script"))
+def _read(wdir: str, rel: str) -> str:
+    with open(os.path.join(wdir, rel), encoding="utf-8") as f:
+        return f.read()
+
+
+def _concat(wdir, rel_paths, escape):
+    return "\n".join(escape(_read(wdir, rel)) for rel in rel_paths)
+
+
+def _js_escape(s: str) -> str:
+    return s.replace("</script", "<\\/script")
+
+
+def _render(wdir, tpl, manifest, *, payload_b64, name, site_html="",
+            extra_css=(), extra_js=()):
+    """Shared inlining for the CLI report and the site page."""
+    css = _concat(wdir, manifest.get("css", []) + list(extra_css),
+                  lambda s: s)
+    js = _concat(wdir, manifest.get("js", []) + list(extra_js), _js_escape)
 
     manual = ""
     mrel = manifest.get("manual")
     if mrel:
         from .mdlite import md_to_html
-        with open(os.path.join(wdir, mrel), encoding="utf-8") as f:
-            manual = md_to_html(f.read())
+        manual = md_to_html(_read(wdir, mrel))
 
     # __MANUAL__ is replaced last: literal placeholder-looking text inside
-    # the manual must survive verbatim (design 5.6)
+    # the manual must survive verbatim (design 5.6). __SITE__ goes before it
+    # for the same reason.
     return (tpl
             .replace("__TITLE__", _html.escape(name, quote=True))
             .replace("__GENERATOR__",
@@ -72,4 +79,25 @@ def render_html(payload_b64: str, name: str) -> str:
             .replace("/*__CSS__*/", css)
             .replace("/*__JS__*/", js)
             .replace("__PAYLOAD__", payload_b64)
+            .replace("<!--__SITE__-->", site_html)
             .replace("<!--__MANUAL__-->", manual))
+
+
+def render_html(payload_b64: str, name: str) -> str:
+    """Inline web assets + payload -> standalone CLI report HTML."""
+    wdir = web_dir()
+    return _render(wdir, _read(wdir, "index.html"), load_manifest(wdir),
+                   payload_b64=payload_b64, name=name)
+
+
+def render_site(wdir: str = None) -> str:
+    """Site index.html: empty payload -> landing screen; report assets plus
+    the manifest "site" section (landing markup, extra css/js) inlined."""
+    wdir = wdir or web_dir()
+    manifest = load_manifest(wdir)
+    site = manifest.get("site", {})
+    landing = _read(wdir, site["html"]) if site.get("html") else ""
+    return _render(wdir, _read(wdir, "index.html"), manifest,
+                   payload_b64="", name="blkscope", site_html=landing,
+                   extra_css=site.get("css", []),
+                   extra_js=site.get("js", []))

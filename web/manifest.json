@@ -15,5 +15,22 @@
     "js/panels.js",
     "js/report.js",
     "js/app.js"
+  ],
+  "site": {
+    "html": "site/landing.html",
+    "css": ["site/site.css"],
+    "js": ["engine/bootstrap.js", "site/site.js"]
+  },
+  "worker": [
+    "engine/proto.js",
+    "engine/tp_client.js",
+    "engine/bootstrap.js",
+    "model/frame.js",
+    "model/req.js",
+    "model/files.js",
+    "model/dstate.js",
+    "model/model.js",
+    "model/extract.js",
+    "model/payload.js"
   ]
 }

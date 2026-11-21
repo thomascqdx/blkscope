@@ -35,14 +35,14 @@ def missing_paths():
     return [p for p in need if not os.path.exists(p)]
 
 
-def start_httpd():
-    """Serve the repo root on an ephemeral localhost port. Returns
+def start_httpd(root=ROOT):
+    """Serve `root` on an ephemeral localhost port. Returns
     (server, thread, base_url)."""
     class Quiet(http.server.SimpleHTTPRequestHandler):
         def log_message(self, *args):
             pass
 
-    handler = functools.partial(Quiet, directory=ROOT)
+    handler = functools.partial(Quiet, directory=root)
     srv = http.server.ThreadingHTTPServer(("127.0.0.1", 0), handler)
     t = threading.Thread(target=srv.serve_forever, daemon=True)
     t.start()

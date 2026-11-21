@@ -1,0 +1,54 @@
+<div id="site">
+  <div id="landcard">
+    <h1 id="sitename">blkscope</h1>
+    <div id="sitever" class="ver"></div>
+    <div class="tagline">块设备 IO trace 可视化分析</div>
+    <div id="dropzone">
+      <div class="dz-big">把 trace 文件拖到这里</div>
+      <div class="dz-or">或</div>
+      <button id="pickbtn" type="button">选择文件…</button>
+      <input id="filepick" type="file" hidden multiple>
+    </div>
+    <ul class="notes">
+      <li>trace 只在本机浏览器内处理，不会上传</li>
+      <li>支持 Perfetto trace / .gz / .zip（同 Perfetto UI）</li>
+      <li>超大 trace 可能较慢或内存不足，建议改用 CLI 版 blkscope</li>
+    </ul>
+    <div id="chooser" hidden>
+      <div class="ch-title">一次只分析一个 trace，请选择一个文件：</div>
+      <div id="chlist"></div>
+    </div>
+    <div id="progress" hidden>
+      <div id="pgfile"></div>
+      <div id="pgwarn" hidden></div>
+      <div class="stage" data-st="parse">
+        <span class="st-name">读取并解析 trace</span>
+        <span class="st-info"></span>
+        <span class="st-time"></span>
+      </div>
+      <div class="stage" data-st="extract">
+        <span class="st-name">提取事件</span>
+        <span class="st-info"></span>
+        <span class="st-time"></span>
+      </div>
+      <div class="stage" data-st="model">
+        <span class="st-name">建模</span>
+        <span class="st-info"></span>
+        <span class="st-time"></span>
+      </div>
+      <div class="stage" data-st="render">
+        <span class="st-name">渲染</span>
+        <span class="st-info"></span>
+        <span class="st-time"></span>
+      </div>
+    </div>
+    <div id="siteerr" hidden>
+      <div id="errmsg"></div>
+      <div id="errhint">建议使用 CLI 版 blkscope 分析该文件。</div>
+      <details id="errdet"><summary>技术细节</summary>
+        <pre id="errstack"></pre>
+      </details>
+      <button id="errback" type="button">重新选择文件</button>
+    </div>
+  </div>
+</div>

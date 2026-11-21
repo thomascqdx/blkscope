@@ -9,15 +9,24 @@ IOT.data = (function () {
   const MIP = 10;                      // mipmap ratio
   const COUNTER_DEFS = ['read', 'write', 'iops', 'ind', 'qdep'];
 
-  async function load() {
-    const b64 = document.getElementById('payload').textContent.trim();
-    const bin = atob(b64);
-    const bytes = new Uint8Array(bin.length);
-    for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
-    const stream = new Blob([bytes]).stream()
-      .pipeThrough(new DecompressionStream('gzip'));
-    const text = await new Response(stream).text();
-    D.payload = JSON.parse(text);
+  /* load(payloadObj?): decode the embedded #payload element when it has
+   * content (CLI report); otherwise use the given payload object (site
+   * analysis result). */
+  async function load(payloadObj) {
+    const el = document.getElementById('payload');
+    const b64 = el ? el.textContent.trim() : '';
+    if (b64) {
+      const bin = atob(b64);
+      const bytes = new Uint8Array(bin.length);
+      for (let i = 0; i < bin.length; i++) bytes[i] = bin.charCodeAt(i);
+      const stream = new Blob([bytes]).stream()
+        .pipeThrough(new DecompressionStream('gzip'));
+      const text = await new Response(stream).text();
+      D.payload = JSON.parse(text);
+    } else {
+      if (!payloadObj) throw new Error('payload missing');
+      D.payload = payloadObj;
+    }
     build();
     return D;
   }
