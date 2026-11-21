@@ -159,6 +159,80 @@ def _fresh_page(browser, httpd):
     return page, perr
 
 
+def test_site_topbar_not_clipped(report_page, browser, tmp_path):
+    """Site topbar buttons must not push CLI controls off-screen: #helpbtn
+    (the last CLI control) stays inside the viewport at 1280 and 1920 px,
+    and so do the site buttons."""
+    page = report_page[0]
+    for w in (1280, 1920):
+        page.set_viewport_size({"width": w, "height": 720})
+        for bid in ("helpbtn", "exportbtn", "openbtn"):
+            right = page.evaluate(
+                f"document.getElementById('{bid}')"
+                ".getBoundingClientRect().right")
+            assert right <= w, f"#{bid} clipped at {w}px: right={right}"
+        page.screenshot(
+            path=os.path.join(SHOTS, f"topbar_site_{w}.png"))
+    # CLI report reference at the same widths
+    from blkscope.html import render_html
+    from blkscope.payload import encode_payload
+    exp = _expected_payload()
+    cli = tmp_path / "cli_report.html"
+    cli.write_text(render_html(encode_payload(exp),
+                               exp["meta"]["name"]), encoding="utf-8")
+    p2 = browser.new_page()
+    p2.goto("file:///" + str(cli).replace("\\", "/"))
+    p2.wait_for_function("window.IOT && window.IOT.ready === true",
+                         timeout=120_000)
+    for w in (1280, 1920):
+        p2.set_viewport_size({"width": w, "height": 720})
+        p2.screenshot(path=os.path.join(SHOTS, f"topbar_cli_{w}.png"))
+    p2.close()
+
+
+def test_site_offline_file_url(browser, tmp_path):
+    """Offline single file via file:// : sample payload parity + a valid
+    「导出报告」 download, no console/page errors."""
+    out = tmp_path / "blkscope-offline.html"
+    build_web.build_offline(str(out))
+    ctx = browser.new_context(accept_downloads=True)
+    page = ctx.new_page()
+    cerr, perr = [], []
+    page.on("console",
+            lambda m: cerr.append(m.text) if m.type == "error" else None)
+    page.on("pageerror", lambda e: perr.append(e))
+    page.goto("file:///" + str(out).replace("\\", "/"))
+    page.set_input_files("#filepick", SAMPLE)
+    page.wait_for_function("window.IOT && window.IOT.ready === true",
+                           timeout=600_000)
+    os.makedirs(SHOTS, exist_ok=True)
+    page.screenshot(path=os.path.join(SHOTS, "offline_report.png"))
+    payload = page.evaluate("IOT.data.D.payload")
+    timings = page.evaluate("IOT.site.timings")
+
+    with page.expect_download() as dl:
+        page.click("#exportbtn")
+    exp_html = tmp_path / "export.html"
+    dl.value.save_as(exp_html)
+    html = exp_html.read_text(encoding="utf-8")
+    payloads = re.findall(
+        r'<script type="application/octet-stream" id="payload">(.*?)</script>',
+        html, re.S)
+    assert len(payloads) == 1
+    embedded = json.loads(gzip.decompress(base64.b64decode(payloads[0])))
+    ctx.close()
+
+    assert _strip_meta(payload) == _strip_meta(_expected_payload())
+    assert _strip_meta(embedded) == _strip_meta(payload)
+    os.makedirs(WORK, exist_ok=True)
+    with open(os.path.join(WORK, "web_site_offline_timings.json"),
+              "w") as f:
+        json.dump({"timings_ms": timings,
+                   "size": os.path.getsize(out)}, f, indent=2)
+    print("offline timings:", timings)
+    assert perr == [] and cerr == [], (perr, cerr)
+
+
 def test_site_sniff_text_systrace(browser, httpd):
     """(c1) text systrace -> message shown, no worker started."""
     page, perr = _fresh_page(browser, httpd)

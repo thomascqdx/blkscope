@@ -1,11 +1,14 @@
 #!/usr/bin/env python3
 """One-command release build: PyInstaller onefile exe + smoke test + dist zip.
 
-Steps: preflight -> clean-tree check -> fetch/verify trace_processor ->
-unit tests -> PyInstaller onefile build (bundles trace_processor and web/)
--> smoke test the built exe (--version + fixture -> HTML) -> stage
+Steps: preflight -> clean-tree check -> fetch/verify trace_processor (native
++ wasm) -> unit tests -> PyInstaller onefile build (bundles
+trace_processor and web/) -> smoke test the built exe
+(--version + fixture -> HTML) -> stage
 dist/blkscope-<ver>-<plat>-<arch>/ (exe + README + LICENSE + manual) ->
-zip + .sha256 -> stamp dist/perfbox-tool.json for perfbox.
+zip + .sha256 -> web assets (dist/web/ -> blkscope-web-<ver>.zip +
+blkscope-offline-<ver>.html + .sha256) -> stamp dist/perfbox-tool.json
+for perfbox (exe artifact only).
 
 Usage:
     .\\.venv\\Scripts\\python scripts\\build_release.py [--skip-tests] [--allow-dirty] [--proxy URL]
@@ -83,6 +86,14 @@ def git_state(args) -> str:
 def fetch_tp(args) -> None:
     step("fetching trace_processor")
     cmd = [sys.executable, os.path.join(ROOT, "scripts", "fetch_tp.py")]
+    if args.proxy:
+        cmd += ["--proxy", args.proxy]
+    run(cmd, cwd=ROOT)
+
+
+def fetch_tp_wasm(args) -> None:
+    step("fetching trace_processor wasm")
+    cmd = [sys.executable, os.path.join(ROOT, "scripts", "fetch_tp_wasm.py")]
     if args.proxy:
         cmd += ["--proxy", args.proxy]
     run(cmd, cwd=ROOT)
@@ -195,10 +206,39 @@ def package(exe: str, rel: str) -> str:
                 full = os.path.join(dirpath, fn)
                 arc = os.path.join(rel, os.path.relpath(full, staging))
                 z.write(full, arc)
-    digest = sha256(zip_path)
-    with open(zip_path + ".sha256", "w", encoding="ascii") as f:
-        f.write(f"{digest}  {os.path.basename(zip_path)}\n")
+    write_sha256(zip_path)
     return zip_path
+
+
+def write_sha256(path: str) -> str:
+    digest = sha256(path)
+    with open(path + ".sha256", "w", encoding="ascii") as f:
+        f.write(f"{digest}  {os.path.basename(path)}\n")
+    return digest
+
+
+def build_web_assets(ver: str):
+    """dist/web/ site dir -> blkscope-web-<ver>.zip (+DEPLOY.md at root),
+    plus the blkscope-offline-<ver>.html single file; .sha256 for both."""
+    step("building web assets")
+    sys.path.insert(0, os.path.join(ROOT, "scripts"))
+    import build_web
+    web_out = os.path.join(DIST_DIR, "web")
+    info = build_web.build(web_out)
+    print(f"  dist/web: {len(info['files'])} files")
+
+    web_zip = os.path.join(DIST_DIR, f"blkscope-web-{ver}.zip")
+    if os.path.isfile(web_zip):
+        os.remove(web_zip)
+    with zipfile.ZipFile(web_zip, "w", zipfile.ZIP_DEFLATED) as z:
+        for fn in sorted(os.listdir(web_out)):
+            z.write(os.path.join(web_out, fn), fn)
+        z.write(os.path.join(ROOT, "docs", "deploy_web.md"), "DEPLOY.md")
+    write_sha256(web_zip)
+
+    off = build_web.build_offline(build_web.default_offline_path())
+    write_sha256(off["out"])
+    return web_zip, off["out"]
 
 
 def stamp_manifest(zip_path: str) -> str:
@@ -226,10 +266,12 @@ def main() -> None:
     ver, rel = preflight(args)
     commit = git_state(args)
     fetch_tp(args)
+    fetch_tp_wasm(args)
     run_tests(args)
     exe = build_exe()
     smoke(exe, ver)
     zip_path = package(exe, rel)
+    web_zip, offline_html = build_web_assets(ver)
     manifest = stamp_manifest(zip_path)
 
     step("summary")
@@ -238,6 +280,11 @@ def main() -> None:
     print(f"exe     : {exe} ({os.path.getsize(exe) / 1e6:.1f} MB)")
     print(f"zip     : {zip_path} ({os.path.getsize(zip_path) / 1e6:.1f} MB)")
     print(f"sha256  : {sha256(zip_path)}")
+    print(f"web zip : {web_zip} ({os.path.getsize(web_zip) / 1e6:.1f} MB)")
+    print(f"sha256  : {sha256(web_zip)}")
+    print(f"offline : {offline_html} "
+          f"({os.path.getsize(offline_html) / 1e6:.1f} MB)")
+    print(f"sha256  : {sha256(offline_html)}")
     print(f"manifest: {manifest}")
 
 

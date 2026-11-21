@@ -12,6 +12,7 @@ IOT.site = (function () {
   const timings = {};                        // ms per stage + total
   let startFn = null;
   let worker = null;
+  let workerBlobUrl = null;
   let workerCount = 0;                       // test hook: workers started
   let t0All = 0;
   let tickTimer = null;
@@ -141,8 +142,16 @@ IOT.site = (function () {
     $('chooser').hidden = true;
   }
 
-  function resetLanding() {
+  function stopWorker() {
     if (worker) { worker.terminate(); worker = null; }
+    if (workerBlobUrl) {
+      URL.revokeObjectURL(workerBlobUrl);
+      workerBlobUrl = null;
+    }
+  }
+
+  function resetLanding() {
+    stopWorker();
     stopTick();
     $('siteerr').hidden = true;
     $('progress').hidden = true;
@@ -165,7 +174,7 @@ IOT.site = (function () {
 
   function fail(msg, detail) {
     stopTick();
-    if (worker) { worker.terminate(); worker = null; }
+    stopWorker();
     showMsg(msg, '', detail || msg);
   }
 
@@ -243,7 +252,28 @@ IOT.site = (function () {
     setStage('parse', 'active');
     stageTick('parse');
 
-    worker = new Worker('analysis_worker.js');
+    const engine = {};
+    const transfer = [];
+    let workerUrl = 'analysis_worker.js';
+    const workerSrc = inlineText('blk-worker');
+    if (workerSrc !== null) {
+      // Offline single-file: worker bundle + engine + wasm come from the
+      // embedded blk-* elements. memory64 detection decides which single
+      // wasm build is decoded (base64 -> bytes, transferred).
+      workerBlobUrl = URL.createObjectURL(
+        new Blob([workerSrc], { type: 'text/javascript' }));
+      workerUrl = workerBlobUrl;
+      engine.engineSource = inlineText('blk-engine');
+      const m64 = BLK.engine.memory64Supported();
+      const wasm = inlineU8(m64 ? 'blk-wasm64' : 'blk-wasm32');
+      if (m64) engine.wasmBytes64 = wasm; else engine.wasmBytes32 = wasm;
+      if (wasm) transfer.push(wasm.buffer);
+    } else {
+      engine.engineUrl = 'engine_bundle.js';
+      engine.wasmUrl32 = 'trace_processor.wasm';
+      engine.wasmUrl64 = 'trace_processor_memory64.wasm';
+    }
+    worker = new Worker(workerUrl);
     workerCount++;
     worker.onmessage = onWorkerMsg;
     worker.onerror = function (e) {
@@ -251,15 +281,11 @@ IOT.site = (function () {
     };
     worker.postMessage({
       file: file,
-      engine: {
-        engineUrl: 'engine_bundle.js',
-        wasmUrl32: 'trace_processor.wasm',
-        wasmUrl64: 'trace_processor_memory64.wasm',
-      },
+      engine: engine,
       name: stemOf(file.name),
       source: file.name,
       toolVersion: siteVersion(),
-    });
+    }, transfer);
   }
 
   function onWorkerMsg(ev) {
@@ -298,7 +324,7 @@ IOT.site = (function () {
     setStage('model', 'done', null, t.model);
     setStage('render', 'active');
     stageTick('render');
-    if (worker) { worker.terminate(); worker = null; }
+    stopWorker();
     $('site').style.display = 'none';
     const t0 = performance.now();
     await startFn(m.payload);
@@ -313,7 +339,8 @@ IOT.site = (function () {
   function addTopbarButtons() {
     const tb = document.getElementById('topbar');
     if (!tb || document.getElementById('openbtn')) return;
-    const anchor = tb.querySelector('.spacer').nextSibling;
+    // Appended at the end with compact labels so every CLI-report control
+    // stays visible at 1280px (the topbar wraps if truly out of room).
     function mk(id, text, title, fn) {
       const b = document.createElement('button');
       b.id = id;
@@ -321,18 +348,24 @@ IOT.site = (function () {
       b.textContent = text;
       b.title = title;
       b.addEventListener('click', fn);
-      tb.insertBefore(b, anchor);
+      tb.appendChild(b);
     }
-    mk('exportbtn', '导出报告',
-       '导出与 CLI 版相同格式的单文件报告', exportReport);
-    mk('openbtn', '打开其他 trace',
-       '返回拖放页选择其他 trace 文件',
+    mk('openbtn', '打开…', '打开其他 trace（返回拖放页）',
        function () { location.reload(); });
+    mk('exportbtn', '导出', '导出报告（与 CLI 版相同格式的单文件 HTML）',
+       exportReport);
   }
 
-  /* Kept behind one function so the offline single-file build (P6) can
-   * substitute an embedded template instead of a fetch. */
+  /* Served mode fetches dist/web/report_template.html; the offline
+   * single-file build embeds it (gzip+base64) as #blk-report-template. */
   async function fetchTemplate() {
+    const el = document.getElementById('blk-report-template');
+    if (el) {
+      const gz = b64ToU8(el.textContent.trim());
+      const stream = new Blob([gz]).stream()
+        .pipeThrough(new DecompressionStream('gzip'));
+      return await new Response(stream).text();
+    }
     const r = await fetch('report_template.html');
     if (!r.ok) {
       throw new Error('report_template.html: HTTP ' + r.status);
@@ -354,6 +387,29 @@ IOT.site = (function () {
       s += String.fromCharCode.apply(null, u8.subarray(i, i + 0x8000));
     }
     return btoa(s);
+  }
+
+  function b64ToU8(b64) {
+    const s = atob(b64);
+    const u = new Uint8Array(s.length);
+    for (let i = 0; i < s.length; i++) u[i] = s.charCodeAt(i);
+    return u;
+  }
+
+  // ---------- offline single-file (§8 离线兜底): embedded base64 assets --
+  // dist/blkscope-offline-<ver>.html carries the worker bundle, the engine
+  // bundle, both wasm builds and the report template inside non-executing
+  // <script type="application/octet-stream" id="blk-*"> elements. Their
+  // presence switches the page to inline mode (no fetches, works on
+  // file://).
+  function inlineU8(id) {
+    const el = document.getElementById(id);
+    return el ? b64ToU8(el.textContent.trim()) : null;
+  }
+
+  function inlineText(id) {
+    const u = inlineU8(id);
+    return u ? new TextDecoder().decode(u) : null;
   }
 
   async function exportReport() {

@@ -10,6 +10,7 @@ body {
 #topbar {
   display: flex; align-items: center; gap: 12px; padding: 4px 10px;
   background: #2b2b2b; border-bottom: 1px solid #111; flex: none;
+  flex-wrap: wrap;   /* wrap instead of clipping when space runs out */
 }
 #title { font-weight: 600; color: #fff; }
 #devinfo { color: #999; font-size: 11px; }
