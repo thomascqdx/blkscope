@@ -284,8 +284,9 @@ def match_make_requests(req: pd.DataFrame, bio_make: pd.DataFrame,
             if rsub.empty:
                 continue
             m = pd.merge_asof(
-                lsub.assign(lid=lsub.index).sort_values("t_key"),
-                rsub.sort_values("mk_ts"),
+                lsub.assign(lid=lsub.index).sort_values(
+                    "t_key", kind="stable"),
+                rsub.sort_values("mk_ts", kind="stable"),
                 left_on="t_key", right_on="mk_ts", by="gkey",
                 direction="backward", tolerance=MAKE_MATCH_TOL_NS,
                 suffixes=("", "_mk"))
@@ -347,7 +348,8 @@ def enrich_requests(req: pd.DataFrame, mq_complete: pd.DataFrame,
         l["t_cmp"] = l["t_cmp"].astype("int64")
         l["lid"] = l.index
         m = pd.merge_asof(
-            l.sort_values("t_cmp"), mq_complete.sort_values("ts"),
+            l.sort_values("t_cmp", kind="stable"),
+            mq_complete.sort_values("ts", kind="stable"),
             left_on="t_cmp", right_on="ts", by=["dev", "sector"],
             direction="nearest", tolerance=TAG_MATCH_TOL_NS,
             suffixes=("", "_mq"))
@@ -367,7 +369,8 @@ def enrich_requests(req: pd.DataFrame, mq_complete: pd.DataFrame,
         base = base.dropna(subset=["t_start"])
         base["t_start"] = base["t_start"].astype("int64")
         m = pd.merge_asof(
-            rq.sort_values("ts"), base.sort_values("t_start"),
+            rq.sort_values("ts", kind="stable"),
+            base.sort_values("t_start", kind="stable"),
             left_on="ts", right_on="t_start", by=["dev", "sector"],
             direction="backward")
         ok = m["req_id"].notna() & (m["ts"] <= m["t_cmp"].fillna(t_max))
@@ -377,7 +380,8 @@ def enrich_requests(req: pd.DataFrame, mq_complete: pd.DataFrame,
             req["rq_n"] = np.maximum(
                 req["rq_n"],
                 req["req_id"].map(cnt).fillna(0).astype("int64"))
-            last = m.sort_values("ts").groupby("req_id").tail(1)
+            last = m.sort_values("ts", kind="stable") \
+                .groupby("req_id").tail(1)
             req["rq_reason"] = req["req_id"].map(
                 last.set_index("req_id")["reason"])
             requeues = m[["ts", "req_id", "reason"]] \
@@ -650,7 +654,8 @@ def assign_slots(req: pd.DataFrame, t_max: int):
         busy = []          # heap of (end, slot)
         free = []          # heap of reusable slot ids
         n_slots = 0
-        for idx, start, end, lost in g.sort_values("t_iss")[
+        for idx, start, end, lost in g.sort_values(
+                "t_iss", kind="stable")[
                 ["t_iss", "t_cmp", "cmp_lost"]].itertuples(name=None):
             end = start if lost else (min(t_max, start + SLOT_INCOMPLETE_NS)
                                       if pd.isna(end) else end)
