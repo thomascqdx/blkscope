@@ -18,6 +18,9 @@ samples/
 # trace_processor binary (fetched by scripts/fetch_tp.py)
 tools/trace_processor_shell*
 
+# Perfetto web engine assets (fetched by scripts/fetch_tp_wasm.py)
+tools/wasm/
+
 # review scratch
 review_tmp/
 

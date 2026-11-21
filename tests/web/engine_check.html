@@ -1,0 +1,51 @@
+<!doctype html>
+<!-- Dev/test harness for web/engine/: loads the three classic scripts,
+     boots the Perfetto wasm engine from /tools/wasm/, loads a chosen trace
+     file and runs the queries listed in window.__queries, putting results
+     on window.__result (or the error on window.__error). -->
+<html>
+<head><meta charset="utf-8"><title>blkscope engine check</title></head>
+<body>
+<input type="file" id="file">
+<pre id="log"></pre>
+<script src="/web/engine/proto.js"></script>
+<script src="/web/engine/tp_client.js"></script>
+<script src="/web/engine/bootstrap.js"></script>
+<script>
+'use strict';
+window.__result = null;
+window.__error = null;
+
+async function __run(file) {
+  const tStart = performance.now();
+  const eng = await BLK.engine.start({
+    engineUrl: '/tools/wasm/engine_bundle.js',
+    wasmUrl32: '/tools/wasm/trace_processor.wasm',
+    wasmUrl64: '/tools/wasm/trace_processor_memory64.wasm',
+  });
+  const tInit = performance.now();
+  const cli = new BLK.TpClient(eng.port);
+  const total = await cli.loadFile(file);
+  const tLoad = performance.now();
+  const results = {};
+  for (const sql of (window.__queries || [])) {
+    results[sql] = await cli.query(sql);
+  }
+  window.__result = {
+    memory64: eng.memory64,
+    engineInitMs: tInit - tStart,
+    traceLoadMs: tLoad - tInit,
+    bytes: total,
+    results: results,
+  };
+  eng.terminate();
+}
+
+document.getElementById('file').addEventListener('change', function (e) {
+  __run(e.target.files[0]).catch(function (err) {
+    window.__error = String((err && err.stack) || err);
+  });
+});
+</script>
+</body>
+</html>
