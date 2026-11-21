@@ -80,16 +80,29 @@ def dump(ex) -> dict:
     }
 
 
-def dump_model(ex) -> dict:
+def dump_model(ex, m=None) -> dict:
     """build_model(ex) intermediate values for JS-model parity:
-    m.req in pairing order, m.requeues in event order, m.counters."""
-    from blkscope.model import build_model
-    m = build_model(ex)
+    m.req in pairing order, m.requeues in event order, m.counters.
+    Pass a prebuilt model via m= to avoid a second build_model call."""
+    if m is None:
+        from blkscope.model import build_model
+        m = build_model(ex)
     return {
         "req": _dump_frame(m.req),
         "requeues": _dump_frame(m.requeues),
         "counters": {k: _norm(v) for k, v in m.counters.items()},
     }
+
+
+def dump_payload(ex, name: str, source: str, m=None) -> dict:
+    """build_payload(build_model(ex)) — the full-payload parity baseline
+    for synthetic Extracted objects (web/model/payload.js mirrors it).
+    Pass a prebuilt model via m= to avoid a second build_model call."""
+    if m is None:
+        from blkscope.model import build_model
+        m = build_model(ex)
+    from blkscope.payload import build_payload
+    return build_payload(m, name=name, source=source)
 
 
 def main() -> None:

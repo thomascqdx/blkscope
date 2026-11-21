@@ -220,6 +220,85 @@
     return out;
   };
 
+  /* Python string ordering: pandas sorts/modes strings by code POINT,
+   * while JS '<' compares UTF-16 code units (they differ only beyond the
+   * BMP). UTF-8 byte order is identical to code-point order, so compare
+   * the encodings. */
+  const _te = new TextEncoder();
+  frame.cmpStr = function (a, b) {
+    if (a === b) return 0;
+    const ba = _te.encode(String(a));
+    const bb = _te.encode(String(b));
+    const n = Math.min(ba.length, bb.length);
+    for (let i = 0; i < n; i++) {
+      if (ba[i] !== bb[i]) return ba[i] < bb[i] ? -1 : 1;
+    }
+    return ba.length - bb.length;
+  };
+
+  /* pd.to_numeric(errors='coerce') equivalent: returns a number or NaN.
+   * Accepts decimal/int/float/inf/nan literals like pandas. */
+  const NUM_RE = /^[\s]*[+-]?(\d+\.?\d*|\.\d+)([eE][+-]?\d+)?[\s]*$/;
+  const NUM_WORD = { 'inf': Infinity, '+inf': Infinity, 'infinity': Infinity,
+    '+infinity': Infinity, '-inf': -Infinity, '-infinity': -Infinity,
+    'nan': NaN };
+  frame.pyToNumber = function (v) {
+    if (v === null || v === undefined) return NaN;
+    const t = typeof v;
+    if (t === 'number') return v;
+    if (t === 'boolean') return v ? 1 : 0;
+    if (t === 'string') {
+      const s = v.trim().toLowerCase();
+      if (Object.prototype.hasOwnProperty.call(NUM_WORD, s)) {
+        return NUM_WORD[s];
+      }
+      if (!s || !NUM_RE.test(s)) return NaN;
+      return Number(s);
+    }
+    return NaN;
+  };
+
+  /* Python '%.*f' formatting: round-half-EVEN on the exact binary value
+   * of the double (JS toFixed rounds ties up). Exact arithmetic on the
+   * mantissa: |x| = mant * 2^exp2; scaled = |x| * 10^n = mant*5^n * 2^(n+exp2),
+   * rounded to an integer with ties-to-even. */
+  frame.pyFixed = function (x, n) {
+    if (!isFinite(x)) return x !== x ? 'nan' : (x < 0 ? '-inf' : 'inf');
+    const neg = x < 0 || Object.is(x, -0);
+    const buf = new ArrayBuffer(8);
+    const f64 = new Float64Array(buf);
+    const u32 = new Uint32Array(buf);
+    f64[0] = Math.abs(x);
+    const hi = u32[1], lo = u32[0];
+    const expBits = (hi >>> 20) & 0x7ff;
+    let mantHi, exp2;
+    if (expBits === 0) {          // subnormal: no implicit leading bit
+      mantHi = hi & 0xfffff;
+      exp2 = -1074;
+    } else {
+      mantHi = (hi & 0xfffff) | 0x100000;
+      exp2 = expBits - 1075;
+    }
+    let num = (BigInt(mantHi) * 4294967296n + BigInt(lo)) *
+      (5n ** BigInt(n));
+    const shift = n + exp2;
+    let q;
+    if (shift >= 0) {
+      q = num << BigInt(shift);   // already integral
+    } else {
+      const d = 1n << BigInt(-shift);
+      q = num / d;
+      const cmp = (num % d) * 2n - d;    // remainder vs divisor/2
+      if (cmp > 0n || (cmp === 0n && (q & 1n))) q += 1n;
+    }
+    let s = q.toString();
+    if (n > 0) {
+      while (s.length <= n) s = '0' + s;
+      s = s.slice(0, -n) + '.' + s.slice(-n);
+    }
+    return (neg ? '-' : '') + s;
+  };
+
   /* Binary min-heap with comparator (for heapq port: heap of tuples). */
   frame.Heap = class {
     constructor(cmp) {

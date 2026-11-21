@@ -30,6 +30,7 @@ import dump_extracted  # noqa: E402
 
 NODE = shutil.which("node")
 PARITY_JS = os.path.join(ROOT, "tests", "js", "model_parity.js")
+PAYLOAD_JS = os.path.join(ROOT, "tests", "js", "payload_parity.js")
 
 pytestmark = pytest.mark.skipif(NODE is None, reason="node not on PATH")
 
@@ -77,6 +78,32 @@ def run_parity(ex, name, tmp_path):
     out = (r.stdout or b"").decode("utf-8", "replace") + \
         (r.stderr or b"").decode("utf-8", "replace")
     assert r.returncode == 0, f"{name} parity failed:\n{out}"
+    return out, py_ms
+
+
+def run_payload_parity(ex, name, tmp_path, m=None, py_ms=None):
+    """dump(ex) + dump_payload(ex) -> JSON -> node payload_parity.js.
+    m = optional prebuilt Python model (build_model result); py_ms is
+    the caller's build_model+build_payload time when it built m itself.
+    Returns (node stdout, py build_model+payload ms)."""
+    ex_path = os.path.join(tmp_path, name + ".extracted.json")
+    payload_path = os.path.join(tmp_path, name + ".payload.json")
+    with open(ex_path, "w", encoding="utf-8") as f:
+        json.dump(dump_extracted.dump(ex), f, ensure_ascii=False)
+    if m is None:
+        t0 = time.time()
+        pl = dump_extracted.dump_payload(ex, name=name, source=name)
+        py_ms = (time.time() - t0) * 1000
+    else:
+        pl = dump_extracted.dump_payload(ex, name=name, source=name, m=m)
+    with open(payload_path, "w", encoding="utf-8") as f:
+        json.dump(pl, f, ensure_ascii=False)
+    r = subprocess.run(
+        [NODE, PAYLOAD_JS, ex_path, payload_path],
+        cwd=ROOT, capture_output=True, timeout=300)
+    out = (r.stdout or b"").decode("utf-8", "replace") + \
+        (r.stderr or b"").decode("utf-8", "replace")
+    assert r.returncode == 0, f"{name} payload parity failed:\n{out}"
     return out, py_ms
 
 
@@ -253,6 +280,229 @@ def test_model_parity_synthetic(tmp_path):
         run_parity(ex, name, str(tmp_path))
 
 
+# ------------------------------------------------------ P4b scenarios
+
+def pc_start(rows):
+    cols = ["ts", "utid", "major_dev", "minor_dev", "ino", "offset",
+            "bytes", "filebuf"]
+    return pd.DataFrame(rows, columns=cols)
+
+
+def fm_add(rows):
+    return pd.DataFrame(rows, columns=["ts", "utid", "s_dev", "i_ino",
+                                       "index"])
+
+
+def dstate(rows):
+    return pd.DataFrame(rows, columns=["ts", "utid", "dur",
+                                       "blocked_function"])
+
+
+def blocked(rows):
+    return pd.DataFrame(rows, columns=["ts", "pid", "caller", "io_wait"])
+
+
+def mq(rows):
+    return pd.DataFrame(rows, columns=["ts", "dev", "sector", "req_tag",
+                                       "rq_log"])
+
+
+def ex_p4b_full():
+    """Files/batches/associate/hints/dstate/waits/slot_limits/devs/
+    quality in one trace (see inline comments for what each row
+    exercises)."""
+    th = threads([
+        (5, 55, "io-t", 1, 55, "app", 0),
+        (9, 66, "kworker", 2, 66, "kwork", 2),      # kernel proc (ppid 2)
+        (7, 77, "t7", np.nan, 77, "noproc", 0),     # no upid
+        (3, 0, "swapper", 4, 0, "idle", 0),         # pid 0 -> kernel
+    ])
+    pc = pc_start([
+        (400, 5, 8, 32, 100, 0, 4096, "file_a.so"),
+        (500, 5, 8, 32, 100, 8192, 4096, "file_a.so"),
+        (800, 5, 8, 32, 300, 0, 4096, "file_c.so"),
+        (59_000_000, 9, 8, 32, 2, 4096, 4096, None),
+        (60_000_000, 5, 8, 32, 150, 0, 4096, "bb.so"),
+        (60_100_000, 5, 8, 32, 150, 0, 4096, "aa.so"),  # mode tie -> aa.so
+    ])
+    fa = fm_add([
+        (600, 5, 2080, 100, 0),            # matched pc_idx1 -> start batch
+        (700, 5, 2080, 100, 1),
+        (7_000_000, 5, 2080, 400, 0),      # unmatched -> no-start seg
+        (8_000_000, 5, 2080, 300, 0),      # matched pc_idx2
+        (9_000_000, 5, 2080, 400, 0),      # unmatched after matched -> seg
+        (20_000_000, 5, 2080, 300, 1),     # matched pc_idx2, gap -> sub 1
+        (30_000_000, 5, 2080, 555, 0),     # no-start seg (pages 30,31)
+        (31_000_000, 5, 2080, 555, 1),
+        (40_000_000, 5, 2080, 555, 0),     # >5ms gap -> new seg
+        (50_000_000, 5, 2080, 555, 0),     # >5ms gap -> new seg
+        (60_500_000, 5, 2080, 150, 0),     # matched pc_idx5
+        (60_000_000, 9, 2080, 1, 0),       # FS元数据 ino1
+        (61_000_000, 9, 2080, 2, 0),       # matched pc ino2 (FS元数据)
+        (62_000_000, 9, 2080, 3, 0),       # FS元数据 ino3
+        (63_000_000, 9, 2080, 42, 0),      # "ino:42"
+    ])
+    ins = rq_ins([
+        (1000, 5, 2080, 8, 8, 4096, "R"),        # R0: assoc ino100 batchA
+        (25_000_000, 5, 2080, 16, 8, 4096, "R"), # R1: n-tie -> ino300
+        (45_000_000, 5, 2080, 24, 8, 8192, "R"), # R2: ino555 (30,31 batch)
+        (55_000_000, 5, 2080, 32, 8, 4096, "R"), # R3: ino555 (50e6 batch)
+        (2000, 5, 2080, 40, 8, 4096, "W"),       # R4: write -> fsrc -1
+        (59_500_000, 9, 2080, 48, 8, 4096, "R"), # R5: pc fallback ino2
+        (100, 7, 1234, 56, 8, 4096, "R"),        # R6: dev 1234, src2 wait
+    ])
+    iss = rq_iss([
+        (1100, 5, 2080, 8, 8, 4096, "R"),
+        (25_100_000, 5, 2080, 16, 8, 4096, "R"),
+        (45_100_000, 5, 2080, 24, 8, 8192, "R"),
+        (55_100_000, 5, 2080, 32, 8, 4096, "R"),
+        (2100, 5, 2080, 40, 8, 4096, "W"),
+        (59_550_000, 9, 2080, 48, 8, 4096, "R"),
+        (150, 7, 1234, 56, 8, 4096, "R"),
+    ])
+    cmp_ = rq_cmp([
+        (1500, 2080, 8, 8, "R", 0),              # R0 cmp: wait src1 seg0
+        (25_500_000, 2080, 16, 8, "R", 0),
+        (45_500_000, 2080, 24, 8, "R", 0),
+        (55_500_000, 2080, 32, 8, "R", 0),
+        (2100, 2080, 40, 8, "W", 0),             # R4 cmp: src1 seg0 + seg1
+        (59_600_000, 2080, 48, 8, "R", 0),
+        (9450, 1234, 56, 8, "R", 0),             # R6: src2 for utid9 seg
+    ])
+    mk = bio_make([
+        (900, 5, 55, 8, "R", 2, 110, 1, 0, 0, 100),  # make-match R0
+    ])
+    mq_c = mq([
+        (1400, 2080, 8, 42, "use_tag: 10"),      # tag 42 for R0
+        (9400, 1234, 56, 43, "use_tag: 28"),     # tag 43, dev limit 28
+    ])
+    mq_r = mq([
+        (1200, 2080, 8, 42, "requeue_reason: 3 use_tag: 10"),
+    ])
+    dst = dstate([
+        (1300, 5, 4000, ""),            # no bf -> caller#13.0, iow 1
+        (1600, 5, 1000, "io_schedule"),  # explicit bf -> fn_ok 1
+        (9000, 9, 500, ""),             # caller#21.0, iow 1 -> src2 wait
+        (5000, 7, 300, ""),             # no blocked on tid77 -> unmatched
+                                        #   left row -> float caller col
+    ])
+    blk = blocked([
+        (1400, 55, 13, 1),
+        (9100, 66, 21, 1),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(
+        rq_insert=ins, rq_issue=iss, rq_complete=cmp_, bio_make=mk,
+        mq_complete=mq_c, mq_requeue=mq_r, pc_start=pc, fm_add=fa,
+        dstate=dst, blocked=blk, threads=th,
+        device={"android_sdk_version": 34, "system_ram_gb": 8.0,
+                "name": "dev0"},
+        stats={"traced_buf_write_wrap_count": 1,
+               "ftrace_cpu_overrun_begin": 2,
+               "ftrace_cpu_overrun_end": 5},
+        t_min=100, t_max=70_000_000, trace_start=50,
+        notes=[("warn", "x_warn", "自定义警告"), ("info", "x_info", "提示B")])
+
+
+def ex_p4b_callers():
+    """Symbolic + mixed-dtype callers; wait src1 and src2."""
+    th = threads([
+        (5, 55, "io-t", 1, 55, "app", 0),
+        (7, 77, "t7", 2, 77, "p2", 0),
+    ])
+    ins = rq_ins([
+        (900, 5, 2080, 8, 8, 4096, "R"),     # cmp inside seg0 -> src1
+        (999_000, 7, 2080, 16, 8, 4096, "R"),  # cmp 1000450 -> src2 seg2
+    ])
+    iss = rq_iss([
+        (950, 5, 2080, 8, 8, 4096, "R"),
+        (999_050, 7, 2080, 16, 8, 4096, "R"),
+    ])
+    cmp_ = rq_cmp([
+        (1149, 2080, 8, 8, "R", 0),          # in [1000, 1150] -> src1
+        (1_000_450, 2080, 16, 8, "R", 0),
+    ])
+    # caller window [ts, end+1ms]; src2 window [end-100us, end]:
+    # seg1 sits >100us after req0's completion so it gets no wait pair
+    dst = dstate([
+        (1000, 5, 100, ""),       # symbolic caller -> fn as-is, iow 1
+        (100_650, 7, 500, ""),    # numeric caller on pid77 -> caller#7
+        (1_000_000, 5, 500, ""),  # symbolic, iow 1, no own completion
+                                 #   -> src2: nearest <= end (1000450)
+    ])
+    blk = blocked([
+        (1050, 55, "bio_schedule", 1),
+        (100_700, 77, 7, 1),
+        (1_002_000, 55, "wakeup", 1),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     dstate=dst, blocked=blk, threads=th,
+                     t_min=0, t_max=2_000_000)
+
+
+def ex_p4b_clean():
+    """All-numeric callers, every lookup matched -> clean caller#N and
+    the block_fn_unresolved quality warning."""
+    th = threads([(5, 55, "io-t", 1, 55, "app", 0)])
+    ins = rq_ins([(900, 5, 2080, 8, 8, 4096, "R")])
+    iss = rq_iss([(950, 5, 2080, 8, 8, 4096, "R")])
+    cmp_ = rq_cmp([(1500, 2080, 8, 8, "R", 0)])
+    dst = dstate([
+        (1000, 5, 1000, ""),
+        (2000, 5, 500, ""),
+    ])
+    blk = blocked([
+        (1050, 55, 7, 1),
+        # +1ms slack: must sit outside seg0's [ts, end+1ms] window to be
+        # a distinct lookup result
+        (1_002_050, 55, 9, 0),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     dstate=dst, blocked=blk, threads=th,
+                     t_min=0, t_max=10_000)
+
+
+def ex_p4b_bigdev():
+    """Composite fkeys and dev encode/decode beyond 2**31."""
+    th = threads([(5, 55, "io-t", 1, 55, "app", 0)])
+    big_sdev = 4294967301            # 2**32 + 5
+    pc = pc_start([
+        (400, 5, 16777216, 5, 99, 0, 4096, "big.so"),  # s_dev = 2**32+5
+    ])
+    fa = fm_add([
+        (600, 5, big_sdev, 99, 0),
+        (700, 5, big_sdev, 99, 1),
+    ])
+    ins = rq_ins([(1000, 5, 4294967296, 8, 8, 4096, "R")])
+    iss = rq_iss([(1100, 5, 4294967296, 8, 8, 4096, "R")])
+    cmp_ = rq_cmp([(1500, 4294967296, 8, 8, "R", 0)])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     pc_start=pc, fm_add=fa, threads=th,
+                     t_min=0, t_max=10_000)
+
+
+def test_payload_parity_synthetic(tmp_path):
+    """Full-payload parity on synthetic Extracted objects covering every
+    P4b function (files meta naming, start/no-start/sub-batches, fm_add
+    mode + pc fallback association, hints, dstate callers + wait src1/2,
+    slot limits, kernel flags, quality, big keys, empty)."""
+    from blkscope.extract import Extracted
+    cases = {
+        "p4b_full": ex_p4b_full(),
+        "p4b_callers": ex_p4b_callers(),
+        "p4b_clean": ex_p4b_clean(),
+        "p4b_bigdev": ex_p4b_bigdev(),
+        "pair_edges": ex_pair_edges(),
+        "requeue_window": ex_requeue_window(),
+        "empty": Extracted(t_min=0, t_max=1000),
+    }
+    for name, ex in cases.items():
+        run_payload_parity(ex, name, str(tmp_path))
+
+
 # ------------------------------------------------------- sample parity
 
 def _sample_stamp():
@@ -263,26 +513,30 @@ def _sample_stamp():
 
 
 def _sample_dumps():
-    """Cache work/<stem>.extracted.json + .model_req.json keyed by
-    sample mtime/size + blkscope version. Returns (paths, py_ms)."""
+    """Cache work/<stem>.extracted.json + .model_req.json + .payload.json
+    keyed by sample mtime/size + blkscope version.
+    Returns (ex_path, model_path, payload_path, py_timings|None)."""
     stem = os.path.splitext(os.path.basename(SAMPLE))[0]
     ex_path = os.path.join(WORK, stem + ".extracted.json")
     model_path = os.path.join(WORK, stem + ".model_req.json")
+    payload_path = os.path.join(WORK, stem + ".payload.json")
     stamp_path = os.path.join(WORK, stem + ".model_parity.stamp.json")
     stamp = _sample_stamp()
     if (os.path.exists(ex_path) and os.path.exists(model_path)
+            and os.path.exists(payload_path)
             and os.path.exists(stamp_path)):
         try:
             old = json.load(open(stamp_path))
         except (OSError, ValueError):
             old = None
         if old == stamp:
-            return ex_path, model_path, None
+            return ex_path, model_path, payload_path, None
     from blkscope import tp as blktp
     from blkscope import extract
     from blkscope.model import (
         assign_slots, categorize, enrich_requests, match_make_requests,
-        pair_requests, parse_rwbs, prio_flags)
+        pair_requests, parse_rwbs, prio_flags, build_model)
+    from blkscope.payload import build_payload
     proc = blktp.open_trace(SAMPLE)
     try:
         ex = extract.extract_all(proc)
@@ -293,8 +547,7 @@ def _sample_dumps():
         json.dump(dump_extracted.dump(ex), f)
     t0 = time.time()
     # P4a portion of build_model, timed separately for the JS-vs-Python
-    # comparison (full build_model additionally does files/batches/
-    # associate/dstate/quality which the JS side doesn't have yet).
+    # comparison.
     req, counters = pair_requests(ex.rq_insert, ex.rq_issue,
                                   ex.rq_complete)
     parsed = parse_rwbs(req["rwbs"])
@@ -314,20 +567,26 @@ def _sample_dumps():
     p4a_ms = (time.time() - t0) * 1000
 
     t0 = time.time()
-    with open(model_path, "w", encoding="utf-8") as f:
-        json.dump(dump_extracted.dump_model(ex), f)
+    m = build_model(ex)
+    payload = build_payload(m, name=stem,
+                            source=os.path.basename(SAMPLE))
     py_ms = (time.time() - t0) * 1000
+    with open(model_path, "w", encoding="utf-8") as f:
+        json.dump(dump_extracted.dump_model(ex, m=m), f)
+    with open(payload_path, "w", encoding="utf-8") as f:
+        json.dump(payload, f, ensure_ascii=False)
     with open(stamp_path, "w", encoding="utf-8") as f:
-        json.dump({**stamp, "p4a_ms": p4a_ms, "build_model_ms": py_ms}, f)
-    return ex_path, model_path, {"p4a_ms": p4a_ms,
-                                 "build_model_ms": py_ms}
+        json.dump({**stamp, "p4a_ms": p4a_ms,
+                   "build_model_payload_ms": py_ms}, f)
+    return ex_path, model_path, payload_path, {
+        "p4a_ms": p4a_ms, "build_model_payload_ms": py_ms}
 
 
 @pytest.mark.skipif(not os.path.exists(SAMPLE) or
                     not os.path.exists(TP_EXE),
                     reason="sample trace or trace_processor_shell missing")
 def test_model_parity_sample():
-    ex_path, model_path, py_ms = _sample_dumps()
+    ex_path, model_path, _, py_ms = _sample_dumps()
     t0 = time.time()
     r = subprocess.run(
         [NODE, PARITY_JS, ex_path, model_path],
@@ -336,7 +595,7 @@ def test_model_parity_sample():
     out = (r.stdout or b"").decode("utf-8", "replace") + \
         (r.stderr or b"").decode("utf-8", "replace")
     print(out)
-    report = {"js_wall_ms": wall_ms, "out_tail": out.strip()[-400:]}
+    report = {"js_model_wall_ms": wall_ms, "model_out_tail": out.strip()[-400:]}
     if py_ms:
         report.update(py_ms)
     try:
@@ -345,3 +604,42 @@ def test_model_parity_sample():
     except OSError:
         pass
     assert r.returncode == 0, f"sample model parity failed:\n{out}"
+
+
+@pytest.mark.skipif(not os.path.exists(SAMPLE) or
+                    not os.path.exists(TP_EXE),
+                    reason="sample trace or trace_processor_shell missing")
+def test_payload_parity_sample():
+    """Full-payload byte-for-byte parity on the sample trace (with the
+    Python payload's generated/tool_version passed through)."""
+    ex_path, _, payload_path, py_ms = _sample_dumps()
+    t0 = time.time()
+    r = subprocess.run(
+        [NODE, PAYLOAD_JS, ex_path, payload_path],
+        cwd=ROOT, capture_output=True, timeout=600)
+    wall_ms = (time.time() - t0) * 1000
+    out = (r.stdout or b"").decode("utf-8", "replace") + \
+        (r.stderr or b"").decode("utf-8", "replace")
+    print(out)
+    # fold JS analyze + python build_model/payload timings into
+    # work/model_parity.json
+    report = {}
+    rp = os.path.join(WORK, "model_parity.json")
+    try:
+        report = json.load(open(rp))
+    except (OSError, ValueError):
+        pass
+    report["js_analyze_wall_ms"] = wall_ms
+    report["payload_out_tail"] = out.strip()[-400:]
+    for line in out.splitlines():
+        if line.startswith("js analyze:"):
+            report["js_analyze_ms"] = float(
+                line.split(":")[1].strip().split()[0])
+    if py_ms:
+        report.update(py_ms)
+    try:
+        with open(rp, "w") as f:
+            json.dump(report, f, indent=2)
+    except OSError:
+        pass
+    assert r.returncode == 0, f"sample payload parity failed:\n{out}"
