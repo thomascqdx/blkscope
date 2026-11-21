@@ -484,6 +484,116 @@ def ex_p4b_bigdev():
                      t_min=0, t_max=10_000)
 
 
+
+# ------------------------------------------------- P4c: exact file keys
+
+def ex_p4c_split_ino():
+    """Same thread, same s_dev, consecutive fm_add ino 1 then 2 within
+    the batch gap -> two batches on two files (old float64 fkey
+    comparison merged them into one)."""
+    th = threads([(5, 55, "io-t", 1, 55, "app", 0)])
+    fa = fm_add([
+        (100, 5, 65155, 1, 0),
+        (101, 5, 65155, 2, 1),
+    ])
+    ins = rq_ins([
+        (100, 5, 2080, 8, 8, 4096, "R"),
+        (101, 5, 2080, 16, 8, 4096, "R"),
+    ])
+    iss = rq_iss([
+        (150, 5, 2080, 8, 8, 4096, "R"),
+        (151, 5, 2080, 16, 8, 4096, "R"),
+    ])
+    cmp_ = rq_cmp([
+        (200, 2080, 8, 8, "R", 0),
+        (201, 2080, 16, 8, "R", 0),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     fm_add=fa, threads=th, t_min=0, t_max=10_000)
+
+
+def ex_p4c_pc_collision():
+    """pc fallback with nearby large inos that collide in float64:
+    the request must get the file of the pc row it actually matched.
+    A second request outside the 20 ms window exercises the NaN path
+    that made the old column float64."""
+    th = threads([(5, 55, "io-t", 1, 55, "app", 0)])
+    pc = pc_start([
+        # out of ts order so the matched file is not the later dict key
+        (500, 5, 254, 131, 12624502, 0, 4096, "a.ttf"),
+        (400, 5, 254, 131, 12624505, 0, 4096, "b.ttf"),
+    ])
+    ins = rq_ins([
+        (1000, 5, 2080, 8, 8, 4096, "R"),
+        (50_000_000, 5, 2080, 16, 8, 4096, "R"),
+    ])
+    iss = rq_iss([
+        (1100, 5, 2080, 8, 8, 4096, "R"),
+        (50_000_100, 5, 2080, 16, 8, 4096, "R"),
+    ])
+    cmp_ = rq_cmp([
+        (1200, 2080, 8, 8, "R", 0),
+        (50_000_200, 2080, 16, 8, "R", 0),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     pc_start=pc, threads=th, t_min=0,
+                     t_max=60_000_000)
+
+
+def ex_p4c_bigdev_wrap():
+    """s_dev large enough that s_dev*2**40+ino overflows int64
+    (new_encode_dev(254, 2**19) = 2147548672): fm_add association and
+    pc fallback must still work."""
+    from blkscope.model import new_encode_dev
+    th = threads([(5, 55, "io-t", 1, 55, "app", 0)])
+    sd = int(new_encode_dev(254, 2 ** 19))       # 2147548672
+    pc = pc_start([
+        (400, 5, 254, 2 ** 19, 9, 0, 4096, "big.so"),
+    ])
+    fa = fm_add([
+        (900, 5, sd, 9, 10),
+        (901, 5, sd, 9, 11),
+    ])
+    ins = rq_ins([
+        (1000, 5, 2080, 8, 8, 4096, "R"),        # fm_add assoc
+        (3000, 5, 2080, 16, 8, 4096, "R"),       # pc fallback
+    ])
+    iss = rq_iss([
+        (1100, 5, 2080, 8, 8, 4096, "R"),
+        (3100, 5, 2080, 16, 8, 4096, "R"),
+    ])
+    cmp_ = rq_cmp([
+        (1200, 2080, 8, 8, "R", 0),
+        (3200, 2080, 16, 8, "R", 0),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(rq_insert=ins, rq_issue=iss, rq_complete=cmp_,
+                     pc_start=pc, fm_add=fa, threads=th,
+                     t_min=0, t_max=10_000)
+
+
+def ex_p4c_caller_int():
+    """Blocked-caller column that pandas promotes to float64 (matched
+    int caller + an unmatched segment) must still render caller#<int>."""
+    th = threads([
+        (5, 55, "io-t", 1, 55, "app", 0),
+        (6, 66, "t6", 1, 66, "app", 0),
+    ])
+    dst = dstate([
+        (1000, 5, 500, ""),      # caller 13 matched -> caller#13
+        (2000, 6, 400, ""),      # no blocked row on tid66 -> NaN caller
+                                 #   -> old merged column was float64
+    ])
+    blk = blocked([
+        (1400, 55, 13, 0),
+    ])
+    from blkscope.extract import Extracted
+    return Extracted(dstate=dst, blocked=blk, threads=th,
+                     t_min=0, t_max=10_000)
+
+
 def test_payload_parity_synthetic(tmp_path):
     """Full-payload parity on synthetic Extracted objects covering every
     P4b function (files meta naming, start/no-start/sub-batches, fm_add
@@ -495,6 +605,10 @@ def test_payload_parity_synthetic(tmp_path):
         "p4b_callers": ex_p4b_callers(),
         "p4b_clean": ex_p4b_clean(),
         "p4b_bigdev": ex_p4b_bigdev(),
+        "p4c_split_ino": ex_p4c_split_ino(),
+        "p4c_pc_collision": ex_p4c_pc_collision(),
+        "p4c_bigdev_wrap": ex_p4c_bigdev_wrap(),
+        "p4c_caller_int": ex_p4c_caller_int(),
         "pair_edges": ex_pair_edges(),
         "requeue_window": ex_requeue_window(),
         "empty": Extracted(t_min=0, t_max=1000),

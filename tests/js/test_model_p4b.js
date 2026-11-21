@@ -1,7 +1,7 @@
-// P4b unit tests: device encode/decode beyond 2^31, composite file
-// keys, pyFixed round-half-even, code-point string ordering, dstate
-// caller formatting (int64 vs float64 vs object), buildQuality message
-// bytes. Expected values verified against pandas/model.py in .venv.
+// P4b/P4c unit tests: device encode/decode beyond 2^31, exact
+// (s_dev, ino) file keys, pyFixed round-half-even, code-point string
+// ordering, dstate caller formatting (integer rendering), buildQuality
+// message bytes. Expected values verified against model.py in .venv.
 'use strict';
 const test = require('node:test');
 const assert = require('node:assert');
@@ -123,6 +123,22 @@ test('buildFiles: FS元数据 naming + filebuf mode code-point tie', () => {
   assert.strictEqual(m[idxOf(77)], 0);
 });
 
+test('buildBatches splits adjacent inos (P4c exact pair compare)',
+  () => {
+    // Same utid, same s_dev, consecutive adds ino 1 then 2 within the
+    // 5 ms gap: the old combined-key float compare merged them; exact
+    // (s_dev, i_ino) comparison must produce two batches.
+    const pcEmpty = table(['ts', 'utid', 'major_dev', 'minor_dev', 'ino',
+      'offset', 'bytes', 'filebuf'], []);
+    const fa = table(['ts', 'utid', 's_dev', 'i_ino', 'index'],
+      [[100, 5, 65155, 1, 0], [101, 5, 65155, 2, 1]]);
+    const { key2id } = model.buildFiles(pcEmpty, fa);
+    const { batches } = model.buildBatches(pcEmpty, fa, key2id);
+    assert.strictEqual(batches.data.batch_id.length, 2);
+    eq(batches.data.file_id,
+      [key2id.get(65155 + '\x01' + 1), key2id.get(65155 + '\x01' + 2)]);
+  });
+
 // ---------------------------------------------------- caller format
 
 function mkDstateInputs(callerRows, threadsRows, dstateRows, reqRows) {
@@ -158,7 +174,7 @@ test('buildDstate caller: all matched int64 -> caller#N', () => {
   eq(r.waitSrc, [1]);
 });
 
-test('buildDstate caller: unmatched merge row -> caller#N.0 (float64)',
+test('buildDstate caller: unmatched merge row -> caller#N (P4c)',
   () => {
     const { dst, blk, req, threads } = mkDstateInputs(
       [[1050, 55, 7, 1]],
@@ -167,9 +183,9 @@ test('buildDstate caller: unmatched merge row -> caller#N.0 (float64)',
       [[5, 1500, 0]]);
     const io = new Set([5, 7]);
     const r = model.buildDstate(dst, blk, req, io, threads);
-    // pandas: merge_asof NaN on the unmatched utid7 row upcasts the
-    // caller column to float64 -> astype(str) yields '7.0'
-    eq(r.dst.data.fn, ['caller#7.0', '']);
+    // P4c: integral numeric callers render caller#<int> regardless of
+    // the pandas dtype the merged caller column would have had
+    eq(r.dst.data.fn, ['caller#7', '']);
     eq(r.dst.data.fn_ok, [0, 0]);
     eq(r.dst.data.iow, [1, -1]);
   });
@@ -230,30 +246,31 @@ test('buildQuality messages byte-exact (ring wrap + overrun)', () => {
     '录制期间丢失 3 个 ftrace 事件（CPU overrun），部分 IO 事件可能缺失');
 });
 
-test('associateFiles pc fallback mirrors pandas float64 fkey .map', () => {
-  const mkReq = () => table(['op', 'utid', 't_make', 't_ins', 't_iss0'],
-    [['R', 5, 1000, null, null]]);
-  const faEmpty = table(['ts', 'utid', 's_dev', 'i_ino', 'index'], []);
-  // object mode: fkey > int64 -> exact int equality -> inexact keys miss
-  const pcBig = table(['ts', 'utid', 'major_dev', 'minor_dev', 'ino',
-      'offset', 'bytes', 'filebuf'],
-    [[400, 5, 16777216, 5, 99, 0, 4096, 'big.so']]);
-  const { key2id: k2 } = model.buildFiles(pcBig, faEmpty);
-  const req = mkReq();
-  model.associateFiles(req, faEmpty, pcBig, k2);
-  assert.strictEqual(req.data.file[0], null);   // pandas: fid NaN
-  assert.strictEqual(req.data.fsrc[0], 0);
-  // int64 mode: two exact fkeys rounding to the same double ->
-  // later dict key wins (verified: pandas .map returned the 2nd key)
-  const pcSmall = table(['ts', 'utid', 'major_dev', 'minor_dev', 'ino',
-      'offset', 'bytes', 'filebuf'], [
-    [400, 5, 254, 27, 12624502, 0, 4096, 'a'],
-    [399, 5, 254, 27, 12624505, 0, 4096, 'b']]);
-  const { key2id: k3, files: f3 } = model.buildFiles(pcSmall, faEmpty);
-  const req2 = mkReq();
-  model.associateFiles(req2, faEmpty, pcSmall, k3);
-  const fid505 = f3.data.ino.indexOf(12624505);
-  assert.notStrictEqual(fid505, -1);
-  assert.strictEqual(req2.data.file[0], fid505);  // ino 502 fkey -> fid 505
-  assert.strictEqual(req2.data.fsrc[0], 2);
-});
+test('associateFiles pc fallback uses exact (s_dev, ino) keys (P4c)',
+  () => {
+    const mkReq = () => table(['op', 'utid', 't_make', 't_ins', 't_iss0'],
+      [['R', 5, 1000, null, null]]);
+    const faEmpty = table(['ts', 'utid', 's_dev', 'i_ino', 'index'], []);
+    // s_dev beyond the old int64 fkey range: association now works
+    const pcBig = table(['ts', 'utid', 'major_dev', 'minor_dev', 'ino',
+        'offset', 'bytes', 'filebuf'],
+      [[400, 5, 16777216, 5, 99, 0, 4096, 'big.so']]);
+    const { key2id: k2, files: f2 } = model.buildFiles(pcBig, faEmpty);
+    const req = mkReq();
+    model.associateFiles(req, faEmpty, pcBig, k2);
+    assert.strictEqual(req.data.file[0], f2.data.ino.indexOf(99));
+    assert.strictEqual(req.data.fsrc[0], 2);
+    // Nearby large inos that collided in float64: the request gets the
+    // file of the pc row it actually matched (backward -> ts 500 row).
+    const pcSmall = table(['ts', 'utid', 'major_dev', 'minor_dev', 'ino',
+        'offset', 'bytes', 'filebuf'], [
+      [500, 5, 254, 27, 12624502, 0, 4096, 'a'],
+      [400, 5, 254, 27, 12624505, 0, 4096, 'b']]);
+    const { key2id: k3, files: f3 } = model.buildFiles(pcSmall, faEmpty);
+    const req2 = mkReq();
+    model.associateFiles(req2, faEmpty, pcSmall, k3);
+    const fid502 = f3.data.ino.indexOf(12624502);
+    assert.notStrictEqual(fid502, -1);
+    assert.strictEqual(req2.data.file[0], fid502);
+    assert.strictEqual(req2.data.fsrc[0], 2);
+  });

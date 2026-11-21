@@ -3,8 +3,10 @@
  * build_files, build_batches, associate_files, build_file_hints,
  * proc_kernel_flag, parse_slot_limit, slot_limits.
  *
- * Composite file keys: model.py uses fkey = s_dev * 2**40 + ino which
- * EXCEEDS 2^53 — this port uses the composite string 's_dev\x01ino'
+ * File keys are the (s_dev, ino) pair kept as a composite string
+ * 's_dev\x01ino' — exact, matching model.py's key2id tuple dict (the
+ * old combined s_dev * 2**40 + ino arithmetic key was dropped in P4c:
+ * it overflowed int64 and degraded into float64 comparisons). — this port uses the composite string 's_dev\x01ino'
  * everywhere fkey/fkey2id appears (never a Number).
  *
  * Depends on BLK.frame (frame.js) and BLK.model basics (req.js).
@@ -23,28 +25,10 @@
   const PC_FALLBACK_TOL_NS = 20000000;   // 20 ms: pc_start fallback
   const USETAG_RE = /use_tag:\s*(\d+)/;
 
-  /* File keys. Python has TWO key spaces and they must be mirrored
-   * exactly:
-   *  - pandas int64 arithmetic (fa['fkey'], win/hit fid computations):
-   *    fkey = s_dev * 2**40 + ino wraps two's-complement past 2**63.
-   *  - dict keys built in Python ints (fkey2id comprehensions): the
-   *    same expression evaluated unbounded — never wraps.
-   * So a wrapped column value misses an unwrapped dict key whenever the
-   * product overflows (s_dev >~ 8.4M): file_id becomes NaN and file
-   * association silently fails — mirrored deliberately for parity.
-   * Keys are decimal strings, never Numbers. */
-  const _I64 = function (x) { return BigInt.asIntN(64, x); };
-  const _FSHIFT = 1n << 40n;
-  const fkeyOf = function (sDev, ino) {          // pandas int64 (wraps)
-    return _I64(BigInt(Math.trunc(sDev)) * _FSHIFT +
-      BigInt(Math.trunc(ino))).toString();
-  };
-  const fkeyUnwrapped = function (sDev, ino) {   // python int (no wrap)
-    return (BigInt(Math.trunc(sDev)) * _FSHIFT +
-      BigInt(Math.trunc(ino))).toString();
-  };
-  /* (s_dev, ino) tuple key — used where Python groups/compares the raw
-   * pair, not the arithmetic fkey. */
+  /* File key = the (s_dev, ino) pair as a string. model.py dropped the
+   * combined s_dev * 2**40 + ino arithmetic key (it overflowed int64
+   * and degraded to float64 comparisons in pandas) in favour of the
+   * exact pair — same key space here. */
   const tupleKey = function (sDev, ino) {
     return sDev + '\x01' + ino;
   };
@@ -219,21 +203,11 @@
     return { files: files, key2id: key2id };
   };
 
-  /* Python rebuilds fkey2id = {sd*2**40 + ino: fid} from key2id in both
-   * build_batches and associate_files — with UNBOUNDED int keys. */
-  function fkey2idOf(key2id) {
-    const m = new Map();
-    for (const [k, fid] of key2id) {
-      const [sd, ino] = k.split('\x01').map(Number);
-      m.set(fkeyUnwrapped(sd, ino), fid);
-    }
-    return m;
-  }
 
   /* build_batches: read batches (design 3.4). Returns
    * {batches: table[batch_id,utid,ts,t_last_add,file_id,page_first,
    *  page_count,has_start], fa: fm_add rows + batch_id (sorted
-   *  utid,ts)}. fkey is the composite string key throughout. */
+   *  utid,ts)}. (s_dev, i_ino) pairs identify files throughout. */
   model.buildBatches = function (pcStart, fmAdd, key2id) {
     const BCOLS = ['batch_id', 'utid', 'ts', 't_last_add', 'file_id',
       'page_first', 'page_count', 'has_start'];
@@ -251,7 +225,7 @@
     const fa0 = fmAdd.data;
     const order = frame.argsort([fa0.utid, fa0.ts], nfa);
     const fa = { utid: [], ts: [], s_dev: [], i_ino: [], index: [],
-      fkey: [], fkeyNum: [], prev_ts: [], prev_key: [], prev_fkeyNum: [],
+      prev_ts: [], prev_sdev: [], prev_ino: [],
       batch_id: [], matched: [] };
     for (const i of order) {
       fa.utid.push(fa0.utid[i]);
@@ -259,27 +233,14 @@
       fa.s_dev.push(fa0.s_dev[i]);
       fa.i_ino.push(fa0.i_ino[i]);
       fa.index.push(fa0.index ? fa0.index[i] : null);
-      const sd = fa0.s_dev[i], ino = fa0.i_ino[i];
-      if (isNull(sd) || isNull(ino)) {
-        fa.fkey.push(null);
-        fa.fkeyNum.push(NaN);   // pandas fkey NaN
-      } else {
-        const ks = fkeyOf(sd, ino);
-        fa.fkey.push(ks);
-        fa.fkeyNum.push(Number(BigInt(ks)));
-      }
       fa.prev_ts.push(null);
-      fa.prev_key.push(null);
-      fa.prev_fkeyNum.push(NaN);
+      fa.prev_sdev.push(null);
+      fa.prev_ino.push(null);
       fa.batch_id.push(null);
       fa.matched.push(false);
     }
     const nf = fa.ts.length;
-    // groupby('utid').shift() for ts and fkey. NOTE: pandas shift()
-    // makes prev_key float64 — the `fkey != prev_key` break test later
-    // compares int64 vs float64 as doubles, so inos differing only past
-    // float64 precision compare EQUAL. Mirror via fkeyNum (Number of the
-    // wrapped int64); NaN keys make `!=` true, like pandas NaN != NaN.
+    // groupby('utid').shift() for ts, s_dev, i_ino
     {
       const last = new Map();
       for (let i = 0; i < nf; i++) {
@@ -287,10 +248,10 @@
         if (isNull(u)) continue;   // pandas groupby drops NaN keys
         if (last.has(u)) {
           fa.prev_ts[i] = last.get(u)[0];
-          fa.prev_key[i] = last.get(u)[1];
-          fa.prev_fkeyNum[i] = last.get(u)[2];
+          fa.prev_sdev[i] = last.get(u)[1];
+          fa.prev_ino[i] = last.get(u)[2];
         }
-        last.set(u, [fa.ts[i], fa.fkey[i], fa.fkeyNum[i]]);
+        last.set(u, [fa.ts[i], fa.s_dev[i], fa.i_ino[i]]);
       }
     }
 
@@ -394,12 +355,13 @@
           if (!g) {
             g = { batch_id: bc, utid: null, tsMin: Infinity,
               pcMin: Infinity, subMin: Infinity, tMax: -Infinity,
-              fkey: null, pageMin: Infinity, n: 0 };
+              sd: null, ino: null, pageMin: Infinity, n: 0 };
             gbMap.set(bc, g);
           }
           // 'first' = first non-null in group order
           if (g.utid === null && !isNull(fa.utid[i])) g.utid = fa.utid[i];
-          if (g.fkey === null && fa.fkey[i] !== null) g.fkey = fa.fkey[i];
+          if (g.sd === null && !isNull(fa.s_dev[i])) g.sd = fa.s_dev[i];
+          if (g.ino === null && !isNull(fa.i_ino[i])) g.ino = fa.i_ino[i];
           if (fa.ts[i] < g.tsMin) g.tsMin = fa.ts[i];
           if (pcTsOf[i] < g.pcMin) g.pcMin = pcTsOf[i];
           if (sub[i] < g.subMin) g.subMin = sub[i];
@@ -419,7 +381,7 @@
             utid: g.utid,
             ts: g.subMin === 0 ? g.pcMin : g.tsMin,
             t_last_add: g.tMax,
-            fkey: g.fkey,
+            sd: g.sd, ino: g.ino,
             page_first: g.pageMin === Infinity ? null : g.pageMin,
             page_count: g.n,
             has_start: g.subMin === 0 ? 1 : 0,
@@ -428,7 +390,7 @@
       }
     }
 
-    // no-start batches: consecutive unmatched rows, same fkey,
+    // no-start batches: consecutive unmatched rows, same file,
     // gap <= 5ms, never continuing across a matched row
     const unIdx = [];
     const prevMatched = new Array(nf).fill(false);
@@ -450,13 +412,15 @@
       const seg = new Array(nf).fill(0);
       const combos = new Set();
       for (const i of unIdx) {
-        // (fkey != prev_key) | (ts - prev_ts > GAP) | prev_matched;
-        // pandas compares the int64 fkey against the float64 shifted
-        // prev_key as doubles — fkeyNum reproduces that rounding, and
-        // NaN (first row / NaN fkey) makes != true.
+        // (s_dev != prev_sdev) | (i_ino != prev_ino) |
+        // (ts - prev_ts > GAP) | prev_matched; pandas NaN != NaN -> True,
+        // so a null on either side breaks.
         const u = fa.utid[i];
         if (isNull(u)) continue;   // NaN utid: batch_code NaN, no batch
-        const brk = fa.fkeyNum[i] !== fa.prev_fkeyNum[i] ||
+        const sameFile = !isNull(fa.s_dev[i]) &&
+          fa.s_dev[i] === fa.prev_sdev[i] &&
+          !isNull(fa.i_ino[i]) && fa.i_ino[i] === fa.prev_ino[i];
+        const brk = !sameFile ||
           (fa.ts[i] - fa.prev_ts[i] > BATCH_GAP_NS) ||
           prevMatched[i];
         const prev = segMap.get(u) || 0;
@@ -480,11 +444,13 @@
         let g = gbMap.get(bc);
         if (!g) {
           g = { batch_id: bc, utid: null, tsMin: Infinity,
-            tMax: -Infinity, fkey: null, pageMin: Infinity, n: 0 };
+            tMax: -Infinity, sd: null, ino: null,
+            pageMin: Infinity, n: 0 };
           gbMap.set(bc, g);
         }
         if (g.utid === null && !isNull(fa.utid[i])) g.utid = fa.utid[i];
-        if (g.fkey === null && fa.fkey[i] !== null) g.fkey = fa.fkey[i];
+        if (g.sd === null && !isNull(fa.s_dev[i])) g.sd = fa.s_dev[i];
+        if (g.ino === null && !isNull(fa.i_ino[i])) g.ino = fa.i_ino[i];
         if (fa.ts[i] < g.tsMin) g.tsMin = fa.ts[i];
         if (fa.ts[i] > g.tMax) g.tMax = fa.ts[i];
         if (!isNull(fa.index[i]) && fa.index[i] < g.pageMin) {
@@ -498,7 +464,7 @@
           utid: g.utid,
           ts: g.tsMin,
           t_last_add: g.tMax,
-          fkey: g.fkey,
+          sd: g.sd, ino: g.ino,
           page_first: g.pageMin === Infinity ? null : g.pageMin,
           page_count: g.n,
           has_start: 0,
@@ -507,7 +473,6 @@
     }
 
     starts.sort(function (a, b) { return a.batch_id - b.batch_id; });
-    const fkey2id = fkey2idOf(key2id);
     const batches = { columns: BCOLS.slice(), data: {
       batch_id: [], utid: [], ts: [], t_last_add: [], file_id: [],
       page_first: [], page_count: [], has_start: [] } };
@@ -516,14 +481,15 @@
       batches.data.utid.push(g.utid);
       batches.data.ts.push(g.ts);
       batches.data.t_last_add.push(g.t_last_add);
-      const fid = fkey2id.get(g.fkey);
+      const fid = (g.sd === null || g.ino === null) ? undefined
+        : key2id.get(tupleKey(g.sd, g.ino));
       batches.data.file_id.push(fid === undefined ? null : fid);
       batches.data.page_first.push(g.page_first);
       batches.data.page_count.push(g.page_count);
       batches.data.has_start.push(g.has_start);
     }
     const faTable = { columns: ['utid', 'ts', 's_dev', 'i_ino', 'index',
-        'fkey', 'batch_id'],
+        'batch_id'],
       data: fa };
     return { batches: batches, fa: faTable };
   };
@@ -645,9 +611,8 @@
             bmode: bmE ? bmE.bid : null });
         }
       }
-      const fkey2id = fkey2idOf(key2id);
       for (const [ri, w] of win) {
-        const fid = fkey2id.get(fkeyOf(w.sd, w.ino));
+        const fid = key2id.get(tupleKey(w.sd, w.ino));
         if (fid === undefined) continue;
         d.file[ri] = fid;
         d.foff[ri] = (w.pmin === Infinity ? null : w.pmin) * 4096;
@@ -675,11 +640,9 @@
           const i = pcOrder[k];
           pcTs[k] = pc0.ts[i];
           pcBy[k] = frame.encodeKeyVal(pc0.utid[i]);
-          /* hit["s_dev"] * 2**40 + hit["ino"] is FLOAT64 in pandas —
-           * merge_asof pads s_dev/ino to float64. Plain Number math
-           * reproduces it exactly (same IEEE double). */
-          pcKey[k] = model.newEncodeDev(pc0.major_dev[i],
-            pc0.minor_dev[i]) * 1099511627776 + pc0.ino[i];
+          pcKey[k] = tupleKey(
+            model.newEncodeDev(pc0.major_dev[i], pc0.minor_dev[i]),
+            pc0.ino[i]);
           pcOff[k] = pc0.offset[i];
           pcByt[k] = pc0.bytes[i];
         }
@@ -694,34 +657,10 @@
         const hit = frame.mergeAsof({
           leftOn: lOn, rightOn: pcTs, leftBy: lBy, rightBy: pcBy,
           direction: 'backward', tolerance: PC_FALLBACK_TOL_NS });
-        /* fkey2id dict keys are exact Python ints; .map on the float64
-         * hit fkeys goes through pandas get_indexer:
-         *  - all keys fit int64 -> int64 Index converted to float64:
-         *    hit fkeys match the nearest double of each key, later dict
-         *    keys win collisions;
-         *  - any key beyond int64 -> object Index of Python ints: only
-         *    exactly-representable keys can equal a float -> miss
-         *    everything else (mirrors pandas, verified empirically). */
-        const fkey2idNum = new Map();
-        {
-          const I64MIN = -(1n << 63n), I64MAX = (1n << 63n) - 1n;
-          const ents = [];
-          let allI64 = true;
-          for (const [k, fid] of key2id) {
-            const [sd, ino] = k.split('\x01').map(Number);
-            const ex = BigInt(sd) * _FSHIFT + BigInt(ino);
-            ents.push([ex, fid]);
-            if (ex < I64MIN || ex > I64MAX) allI64 = false;
-          }
-          for (const [ex, fid] of ents) {
-            const n = Number(ex);
-            if (allI64 || BigInt(n) === ex) fkey2idNum.set(n, fid);
-          }
-        }
         for (let k = 0; k < hit.length; k++) {
           const j = hit[k];
           if (j < 0) continue;
-          const fid = fkey2idNum.get(pcKey[j]);
+          const fid = key2id.get(pcKey[j]);
           if (fid === undefined) continue;
           const ri = miss[lOrder[k]];
           d.file[ri] = fid;

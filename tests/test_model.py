@@ -459,3 +459,77 @@ def test_proc_kernel_flag():
     kt = proc_kernel_flag(threads)
     assert kt == {10: 1, 20: 1, 30: 1, 40: 0}
     assert proc_kernel_flag(threads.iloc[0:0]) == {}
+
+# ------------------------------------------------- P4c: exact file keys
+
+def test_batches_split_on_adjacent_ino():
+    # Regression: the old combined s_dev*2**40+ino key compared in
+    # float64 (prev_key comes from groupby().shift()), so inos 1 vs 2
+    # rounded to the same double and merged into one batch.
+    fa = _fa([(100, 1, 65155, 1, 0), (101, 1, 65155, 2, 1)])
+    files, key2id = build_files(pd.DataFrame(), fa)
+    batches, fad = build_batches(pd.DataFrame(), fa, key2id)
+    assert len(batches) == 2
+    b = batches.sort_values("batch_id")
+    assert b.iloc[0].file_id == key2id[(65155, 1)]
+    assert b.iloc[1].file_id == key2id[(65155, 2)]
+
+
+def test_associate_pc_fallback_nearby_large_inos():
+    # Regression: the fallback's float64 fkey .map collided nearby
+    # inos and could return the WRONG file id.  The pc rows are given
+    # out of ts order so the matched file is not also the later dict
+    # key (which happened to mask the collision when orders agreed).
+    pc = _pc([(500, 5, 254, 131, 12624502, 0, 4096, "a.ttf"),
+              (400, 5, 254, 131, 12624505, 0, 4096, "b.ttf")])
+    files, key2id = build_files(pc, pd.DataFrame())
+    _, fad = build_batches(pc, pd.DataFrame(), key2id)
+    # row 1 misses the 20 ms fallback window; on HEAD its NaN fkey
+    # made the column float64, which is what triggered the collision.
+    req = _req_frame([
+        [2080, 8, 1000, 5, 1100, 1100, 5, 1200, 0, 4096, 8, "R", 1],
+        [2080, 16, 50_000_000, 5, 50_000_100, 50_000_100, 5,
+         50_000_200, 0, 4096, 8, "R", 1],
+    ])
+    req = associate_files(req, fad, pc, key2id)
+    # backward merge hits the ts=500 row (ino 12624502) — the file must
+    # be exactly that row's file, not its neighbour's.
+    assert req.loc[0, "fsrc"] == 2
+    assert req.loc[0, "file"] == key2id[(65155, 12624502)]
+    assert req.loc[1, "fsrc"] == 0 and pd.isna(req.loc[1, "file"])
+
+
+def test_associate_files_sdev_beyond_int64_fkey():
+    # Regression: s_dev * 2**40 + ino overflows int64 for large s_dev
+    # (minor >= 2**19), which silently broke file association.
+    sd = new_encode_dev(254, 2 ** 19)          # 2147548672
+    assert int(sd) * (1 << 40) > 2 ** 63       # the old key would wrap
+    pc = _pc([(400, 5, 254, 2 ** 19, 9, 0, 4096, "big.so")])
+    fa = _fa([(900, 5, sd, 9, 10), (901, 5, sd, 9, 11)])
+    files, key2id = build_files(pc, fa)
+    batches, fad = build_batches(pc, fa, key2id)
+    assert batches.iloc[0].file_id == key2id[(sd, 9)]
+    req = _req_frame([
+        [2080, 8, 1000, 5, 1100, 1100, 5, 1200, 0, 4096, 8, "R", 1],
+        [2080, 16, 3000, 5, 3100, 3100, 5, 3200, 0, 4096, 8, "R", 1],
+    ])
+    req = associate_files(req, fad, pc, key2id)
+    assert req.loc[0, "fsrc"] == 1 and req.loc[0, "file"] == key2id[(sd, 9)]
+    assert req.loc[1, "fsrc"] == 2 and req.loc[1, "file"] == key2id[(sd, 9)]
+
+
+def test_dstate_caller_float_col_renders_int():
+    # Regression: a float64 caller column rendered "caller#13.0";
+    # numeric callers must always render caller#<integer>.
+    threads = pd.DataFrame([(5, 55, "t5", 1, 55, "app")],
+                           columns=["utid", "tid", "thread_name", "upid",
+                                    "pid", "process_name"])
+    dstate = pd.DataFrame(
+        [(5, 1000, 500, None)],
+        columns=["utid", "ts", "dur", "blocked_function"])
+    blocked = pd.DataFrame(
+        [(1400, 55, 13.0, 0)],    # float64 caller column
+        columns=["ts", "pid", "caller", "io_wait"])
+    dst, off, wreq, wsrc = build_dstate(dstate, blocked,
+                                      _req_frame([]), {5}, threads)
+    assert dst.loc[0, "fn"] == "caller#13" and dst.loc[0, "fn_ok"] == 0

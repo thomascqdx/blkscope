@@ -35,8 +35,6 @@ PRIO_SYNC, PRIO_META, PRIO_FUA = 16, 32, 64
 _REQUEUE_RE = re.compile(r"requeue_reason:\s*(\d+)")
 _USETAG_RE = re.compile(r"use_tag:\s*(\d+)")
 
-_FKEY_SHIFT = 40  # file key = s_dev << 40 | ino
-
 
 @dataclass
 class Model:
@@ -452,15 +450,15 @@ def build_batches(pc_start: pd.DataFrame, fm_add: pd.DataFrame,
         return pd.DataFrame(columns=bcols), fm_add.assign(batch_id=np.nan)
 
     fa = fm_add.sort_values(["utid", "ts"]).reset_index(drop=True)
-    fa["fkey"] = fa["s_dev"] * (1 << _FKEY_SHIFT) + fa["i_ino"]
     fa["prev_ts"] = fa.groupby("utid")["ts"].shift()
-    fa["prev_key"] = fa.groupby("utid")["fkey"].shift()
+    fa["prev_sdev"] = fa.groupby("utid")["s_dev"].shift()
+    fa["prev_ino"] = fa.groupby("utid")["i_ino"].shift()
     fa["batch_id"] = np.nan
     fa["matched"] = False
 
     starts = pd.DataFrame(columns=["batch_id", "utid", "ts", "t_last_add",
-                                   "fkey", "page_first", "page_count",
-                                   "has_start"])
+                                   "s_dev", "i_ino", "page_first",
+                                   "page_count", "has_start"])
     if len(pc_start):
         pc = pc_start.sort_values("ts").reset_index(drop=True)
         pc["s_dev"] = new_encode_dev(pc["major_dev"], pc["minor_dev"])
@@ -493,7 +491,8 @@ def build_batches(pc_start: pd.DataFrame, fm_add: pd.DataFrame,
         gb = hit.groupby("batch_code", sort=True)
         starts = gb.agg(utid=("utid", "first"), ts=("ts", "min"),
                         pc_ts=("pc_ts", "min"), sub=("sub", "min"),
-                        t_last_add=("ts", "max"), fkey=("fkey", "first"),
+                        t_last_add=("ts", "max"), s_dev=("s_dev", "first"),
+                        i_ino=("i_ino", "first"),
                         page_first=("index", "min"),
                         page_count=("ts", "size")) \
             .rename_axis("batch_id").reset_index()
@@ -504,12 +503,13 @@ def build_batches(pc_start: pd.DataFrame, fm_add: pd.DataFrame,
         starts["ts"] = np.where(starts["sub"] == 0, starts["pc_ts"],
                                 starts["ts"])
 
-    # no-start batches: consecutive unmatched rows, same fkey, gap <= 5ms,
+    # no-start batches: consecutive unmatched rows, same file, gap <= 5ms,
     # never continuing across a matched row.
     un = fa[~fa["matched"]].copy()
     prev_matched = fa.groupby("utid")["matched"].shift().fillna(False) \
         .astype(bool)
-    brk = ((un["fkey"] != un["prev_key"]) |
+    brk = ((un["s_dev"] != un["prev_sdev"]) |
+           (un["i_ino"] != un["prev_ino"]) |
            (un["ts"] - un["prev_ts"] > BATCH_GAP_NS) |
            prev_matched.loc[un.index])
     un["seg"] = brk.groupby(un["utid"]).cumsum()
@@ -518,20 +518,21 @@ def build_batches(pc_start: pd.DataFrame, fm_add: pd.DataFrame,
     fa.loc[un.index, "batch_id"] = un["batch_code"].astype(float)
     nostarts = un.groupby("batch_code", sort=True).agg(
         utid=("utid", "first"), ts=("ts", "min"), t_last_add=("ts", "max"),
-        fkey=("fkey", "first"), page_first=("index", "min"),
+        s_dev=("s_dev", "first"), i_ino=("i_ino", "first"),
+        page_first=("index", "min"),
         page_count=("ts", "size")).rename_axis("batch_id").reset_index()
     nostarts["has_start"] = np.int64(0)
 
-    cols = ["batch_id", "utid", "ts", "t_last_add", "fkey", "page_first",
-            "page_count", "has_start"]
+    cols = ["batch_id", "utid", "ts", "t_last_add", "s_dev", "i_ino",
+            "page_first", "page_count", "has_start"]
     batches = pd.concat([starts, nostarts])[cols] \
         .sort_values("batch_id").reset_index(drop=True)
-    for c in ("batch_id", "utid", "ts", "t_last_add", "fkey", "page_first",
-              "page_count", "has_start"):
+    for c in ("batch_id", "utid", "ts", "t_last_add", "s_dev", "i_ino",
+              "page_first", "page_count", "has_start"):
         batches[c] = batches[c].astype("int64")
-    fkey2id = {(sd * (1 << _FKEY_SHIFT) + ino): fid
-               for (sd, ino), fid in key2id.items()}
-    batches["file_id"] = batches["fkey"].map(fkey2id)
+    batches["file_id"] = [
+        key2id.get((sd, ino))
+        for sd, ino in zip(batches["s_dev"], batches["i_ino"])]
     return batches[bcols], fa
 
 
@@ -557,8 +558,6 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
         ["t_sub", "utid", "prev_sub"]].assign(req_idx=lambda d: d.index)
     rsub["t_sub"] = rsub["t_sub"].astype("int64")
 
-    fkey2id = {(sd * (1 << _FKEY_SHIFT) + ino): fid
-               for (sd, ino), fid in key2id.items()}
     if len(fa) and len(rsub):
         m = pd.merge_asof(
             fa.sort_values("ts", kind="stable"), rsub,
@@ -578,8 +577,8 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
             win = cnt.sort_values(["n", "s_dev"], ascending=[False, True])
             win = win[~win.index.get_level_values(0).duplicated()] \
                 .reset_index()
-            win["fid"] = (win["s_dev"] * (1 << _FKEY_SHIFT)
-                          + win["i_ino"]).map(fkey2id)
+            win["fid"] = [key2id.get((sd, ino)) for sd, ino
+                          in zip(win["s_dev"], win["i_ino"])]
             win = win[win["fid"].notna()]
             req.loc[win["req_idx"], "file"] = win["fid"].to_numpy()
             req.loc[win["req_idx"], "foff"] = \
@@ -607,8 +606,8 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
             left_on="t_sub", right_on="ts", by="utid", direction="backward",
             tolerance=PC_FALLBACK_TOL_NS)
         hit = m[m["ts"].notna()].copy()
-        hit["fid"] = (hit["s_dev"] * (1 << _FKEY_SHIFT)
-                      + hit["ino"]).map(fkey2id)
+        hit["fid"] = [key2id.get((sd, ino)) for sd, ino
+                      in zip(hit["s_dev"], hit["ino"])]
         hit = hit[hit["fid"].notna()]
         req.loc[hit["lid"], "file"] = hit["fid"].to_numpy()
         req.loc[hit["lid"], "foff"] = hit["offset"].to_numpy()
@@ -770,9 +769,19 @@ def build_dstate(dstate: pd.DataFrame, blocked: pd.DataFrame,
         hh = m[m["bts"].notna() & (m["bts"] >= m["ts"])]
         if len(hh):
             caller = hh["caller"]
-            is_num = pd.to_numeric(caller, errors="coerce").notna()
+            numv = pd.to_numeric(caller, errors="coerce")
+            is_num = numv.notna()
+            # numeric caller -> caller#<id> rendered as an integer no
+            # matter the column dtype (int64, float64, object); a
+            # non-integral numeric string keeps its original form
+            is_int = is_num & np.isfinite(numv) & \
+                (numv == np.floor(numv))
+            caller_str = caller.astype(str)
+            num_str = numv.where(is_int).astype("Int64").astype(str)
             d.loc[hh["lid"], "fn"] = np.where(
-                is_num, "caller#" + caller.astype(str), caller.astype(str))
+                is_num,
+                "caller#" + num_str.where(is_int, caller_str),
+                caller_str)
             d.loc[hh["lid"], "fn_ok"] = np.where(is_num, 0, 1)
             d.loc[hh["lid"], "iow"] = \
                 hh["io_wait"].fillna(-1).astype("int64").to_numpy()

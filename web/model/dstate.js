@@ -109,12 +109,11 @@
         const hit = frame.mergeAsof({
           leftOn: lOn, rightOn: bts, leftBy: lBy, rightBy: rBy,
           direction: 'backward' });
-        /* pandas dtype of m["caller"]: blk.caller is object when it
-         * holds any string, else float64 when it holds NaN/non-integral
-         * numbers OR when merge_asof leaves unmatched left rows (NaN
-         * fills the column). "caller#" + caller.astype(str) therefore
-         * yields "13" for int64/object but "13.0" for float64 — and
-         * "nan" / "None" for missing callers. Mirror that exactly. */
+        /* caller rendering (P4c): numeric callers -> 'caller#' + the
+         * integer form regardless of column dtype; a non-integral
+         * numeric string keeps its original form; symbolic callers
+         * pass through. The float64-vs-object distinction survives
+         * only in how a MISSING caller stringifies ('nan' vs 'None'). */
         let hasStr = false, floatCol = false;
         for (const i of bidx) {
           const c = blk.caller[i];
@@ -126,11 +125,9 @@
             if (hit[k] < 0) { floatCol = true; break; }
           }
         }
-        const fmtCaller = function (c) {
+        const fmtCallerStr = function (c) {   // pandas astype(str)
           if (isNull(c)) return floatCol ? 'nan' : 'None';
-          if (typeof c === 'string') return c;
-          if (floatCol && Number.isInteger(c)) return c + '.0';
-          return String(c);
+          return typeof c === 'string' ? c : String(c);
         };
         for (let k = 0; k < hit.length; k++) {
           const j = hit[k];
@@ -139,10 +136,15 @@
           const bi = bidx[bOrder[j]];
           if (!(bts[j] >= e.ts)) continue;   // bts in [D.ts, D.end+1ms]
           const caller = blk.caller[bi];
-          const num = !Number.isNaN(frame.pyToNumber(caller));
-          d.fn[e.di] = num ? 'caller#' + fmtCaller(caller)
-            : fmtCaller(caller);
-          d.fn_ok[e.di] = num ? 0 : 1;
+          const nv = frame.pyToNumber(caller);
+          const isNum = !Number.isNaN(nv);
+          const isInt = isNum && Number.isFinite(nv) &&
+            Math.floor(nv) === nv;
+          d.fn[e.di] = isNum
+            ? 'caller#' + (isInt ? String(Math.trunc(nv))
+                                 : fmtCallerStr(caller))
+            : fmtCallerStr(caller);
+          d.fn_ok[e.di] = isNum ? 0 : 1;
           d.iow[e.di] = isNull(blk.io_wait[bi]) ? -1
             : Math.trunc(blk.io_wait[bi]);
         }
