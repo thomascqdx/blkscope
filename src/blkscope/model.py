@@ -551,9 +551,9 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
         .fillna(reads["t_iss0"])
     reads = reads.dropna(subset=["t_sub", "utid"]).copy()
     reads["utid"] = reads["utid"].astype("int64")
-    reads["prev_sub"] = reads.sort_values("t_sub") \
+    reads["prev_sub"] = reads.sort_values("t_sub", kind="stable") \
         .groupby("utid")["t_sub"].shift()
-    rsub = reads.sort_values("t_sub")[
+    rsub = reads.sort_values("t_sub", kind="stable")[
         ["t_sub", "utid", "prev_sub"]].assign(req_idx=lambda d: d.index)
     rsub["t_sub"] = rsub["t_sub"].astype("int64")
 
@@ -561,7 +561,7 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
                for (sd, ino), fid in key2id.items()}
     if len(fa) and len(rsub):
         m = pd.merge_asof(
-            fa.sort_values("ts"), rsub,
+            fa.sort_values("ts", kind="stable"), rsub,
             left_on="ts", right_on="t_sub", by="utid", direction="forward")
         ok = m["req_idx"].notna() & (m["ts"] > m["prev_sub"].fillna(-np.inf))
         asg = m[ok]
@@ -571,7 +571,7 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
             # associated batch = the batch holding most of the group's pages
             bm = asg.groupby(["req_idx", "s_dev", "i_ino", "batch_id"]) \
                 .size().rename("bn").reset_index()
-            bm = bm.sort_values("bn", ascending=False) \
+            bm = bm.sort_values("bn", ascending=False, kind="stable") \
                 .drop_duplicates(["req_idx", "s_dev", "i_ino"])
             cnt = cnt.join(bm.set_index(["req_idx", "s_dev", "i_ino"])
                            [["batch_id"]].rename(columns={"batch_id": "bmode"}))
@@ -592,7 +592,8 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
     # fallback: nearest pc_start on same thread within 20 ms before t_sub
     miss = req.index[req["fsrc"] == 0]
     if len(miss) and len(pc_start):
-        pc = pc_start.sort_values("ts").reset_index(drop=True)
+        pc = pc_start.sort_values("ts", kind="stable") \
+            .reset_index(drop=True)
         pc["s_dev"] = new_encode_dev(pc["major_dev"], pc["minor_dev"])
         r = req.loc[miss].copy()
         r["t_sub"] = r["t_make"].fillna(r["t_ins"]).fillna(r["t_iss0"])
@@ -600,7 +601,7 @@ def associate_files(req: pd.DataFrame, fa: pd.DataFrame,
         rr["utid"] = rr["utid"].astype("int64")
         rr["t_sub"] = rr["t_sub"].astype("int64")
         m = pd.merge_asof(
-            rr.assign(lid=rr.index).sort_values("t_sub"),
+            rr.assign(lid=rr.index).sort_values("t_sub", kind="stable"),
             pc[["ts", "utid", "s_dev", "ino", "offset", "bytes"]]
             .rename(columns={"bytes": "pc_bytes"}),
             left_on="t_sub", right_on="ts", by="utid", direction="backward",
@@ -757,12 +758,13 @@ def build_dstate(dstate: pd.DataFrame, blocked: pd.DataFrame,
             .set_index("utid")["tid"]
         dd["tid"] = dd["utid"].map(tid_of)
         dd["lid"] = dd.index
-        blk = blocked.dropna(subset=["ts", "pid"]).sort_values("ts") \
+        blk = blocked.dropna(subset=["ts", "pid"]) \
+            .sort_values("ts", kind="stable") \
             .rename(columns={"pid": "tid", "ts": "bts"})
         dd["q"] = dd["end"] + D_BLK_SLACK_NS
         dd["lid"] = dd.index
         m = pd.merge_asof(
-            dd.dropna(subset=["tid"]).sort_values("q"),
+            dd.dropna(subset=["tid"]).sort_values("q", kind="stable"),
             blk[["bts", "tid", "caller", "io_wait"]],
             left_on="q", right_on="bts", by="tid", direction="backward")
         hh = m[m["bts"].notna() & (m["bts"] >= m["ts"])]
@@ -782,9 +784,9 @@ def build_dstate(dstate: pd.DataFrame, blocked: pd.DataFrame,
     rq["t_cmp"] = rq["t_cmp"].astype("int64")
     if len(rq):
         dr = d[["ts", "utid", "end"]].assign(d_idx=np.arange(len(d))) \
-            .sort_values("ts")
+            .sort_values("ts", kind="stable")
         m = pd.merge_asof(
-            rq.sort_values("t_cmp"), dr,
+            rq.sort_values("t_cmp", kind="stable"), dr,
             left_on="t_cmp", right_on="ts", by="utid", direction="backward")
         ok = m["d_idx"].notna() & (m["t_cmp"] <= m["end"] + D_END_SLACK_NS)
         for di, ri in m.loc[ok, ["d_idx", "req_id"]].itertuples(index=False):
@@ -796,8 +798,9 @@ def build_dstate(dstate: pd.DataFrame, blocked: pd.DataFrame,
     rq_any["t_cmp"] = rq_any["t_cmp"].astype("int64")
     if len(d2) and len(rq_any):
         m = pd.merge_asof(
-            d2.sort_values("end"),
-            rq_any[["t_cmp", "req_id"]].sort_values("t_cmp"),
+            d2.sort_values("end", kind="stable"),
+            rq_any[["t_cmp", "req_id"]].sort_values("t_cmp",
+                                                   kind="stable"),
             left_on="end", right_on="t_cmp", direction="backward",
             tolerance=D_END_BACK_NS)
         ok = m["req_id"].notna()
