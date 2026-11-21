@@ -29,7 +29,18 @@ if (!self.BLK || !self.BLK.analyze) {
   async function run(msg) {
     const timings = {};
     let t0 = performance.now();
-    const eng = await BLK.engine.start(msg.engine || {});
+    // Cache-busting (served mode): this worker is loaded as
+    // analysis_worker.js?v=<ver>; forward the same query to the engine and
+    // wasm URLs so a stale cache can never mix versions. Blob-URL workers
+    // (offline single file) have an empty search and are unaffected.
+    const opts = msg.engine || {};
+    const q = self.location ? self.location.search : '';
+    if (q && opts.engineUrl) {
+      opts.engineUrl += q;
+      if (opts.wasmUrl32) opts.wasmUrl32 += q;
+      if (opts.wasmUrl64) opts.wasmUrl64 += q;
+    }
+    const eng = await BLK.engine.start(opts);
     const cli = new BLK.TpClient(eng.port);
     eng.onError(function (e) { cli.fail(e); });
     try {

@@ -72,10 +72,11 @@ def report_page(browser, httpd):
     os.makedirs(SHOTS, exist_ok=True)
     ctx = browser.new_context(accept_downloads=True)
     page = ctx.new_page()
-    cerr, perr = [], []
+    cerr, perr, requests = [], [], []
     page.on("console",
             lambda m: cerr.append(m.text) if m.type == "error" else None)
     page.on("pageerror", lambda e: perr.append(e))
+    page.on("request", lambda r: requests.append(r.url))
     page.goto(f"{httpd}/index.html")
     page.screenshot(path=os.path.join(SHOTS, "landing.png"))
     page.set_input_files("#filepick", SAMPLE)
@@ -86,7 +87,7 @@ def report_page(browser, httpd):
     page.screenshot(path=os.path.join(SHOTS, "report.png"))
     payload = page.evaluate("IOT.data.D.payload")
     timings = page.evaluate("IOT.site.timings")
-    yield page, payload, timings, cerr, perr
+    yield page, payload, timings, cerr, perr, requests
     ctx.close()
 
 
@@ -107,8 +108,9 @@ def _strip_meta(p):
 
 def test_site_sample_payload(report_page):
     """(a) sample zip via the landing file input -> IOT.ready, payload
-    deep-equals the cached Python payload, timings recorded."""
-    _, payload, timings, cerr, perr = report_page
+    deep-equals the cached Python payload, timings recorded. Worker,
+    engine and wasm requests carry the ?v=<version> cache-buster."""
+    _, payload, timings, cerr, perr, requests = report_page
     assert perr == [], f"page errors: {perr}"
     assert cerr == [], f"console errors: {cerr}"
     exp = _strip_meta(_expected_payload())
@@ -119,12 +121,25 @@ def test_site_sample_payload(report_page):
         json.dump({"timings_ms": timings}, f, indent=2)
     print("site timings:", timings)
 
+    from blkscope import __version__
+    ver = "?v=" + __version__
+    wanted = ("analysis_worker.js", "engine_bundle.js")
+    for name in wanted:
+        hits = [u for u in requests if name in u]
+        assert hits and all(ver in u for u in hits), \
+            f"{name} requests missing {ver}: {hits}"
+    wasm = [u for u in requests if u.endswith(".wasm") or ".wasm?" in u]
+    assert wasm and all(ver in u for u in wasm), \
+        f"wasm requests missing {ver}: {wasm}"
+    # only the selected wasm variant is fetched (memory64 on this browser)
+    assert len(wasm) == 1, f"both wasm variants fetched: {wasm}"
+
 
 def test_site_export_report(report_page, browser, tmp_path):
     """(b) the export button downloads exactly the CLI report format; the
     file contains one payload identical to the page's and renders via
     file://."""
-    page, payload, _, _, _ = report_page
+    page, payload, _, _, _, _ = report_page
     with page.expect_download() as dl:
         page.click("#exportbtn")
     out = tmp_path / "export.html"

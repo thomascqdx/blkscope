@@ -272,6 +272,10 @@ IOT.site = (function () {
       engine.engineUrl = 'engine_bundle.js';
       engine.wasmUrl32 = 'trace_processor.wasm';
       engine.wasmUrl64 = 'trace_processor_memory64.wasm';
+      // cache-busting: the worker carries ?v=<version> and appends it to
+      // the engine/wasm fetches so upgrades can never mix new index.html
+      // with stale long-cached engine assets
+      workerUrl += '?v=' + siteVersion();
     }
     worker = new Worker(workerUrl);
     workerCount++;

@@ -35,9 +35,11 @@
   （不配置也能正常工作）。
 - **压缩**：可对 `.wasm` / `.js` / `.html` 开 gzip/brotli 静态压缩，
   wasm 约可省 40% 传输量。
-- **缓存**：`index.html` 建议短缓存或 `Cache-Control: no-cache`
-  （版本升级后用户可能需要刷新一次）；带内容的静态资源
-  （wasm / js）可以放心长缓存。
+- **缓存**：`index.html` 应 `Cache-Control: no-cache`（否则升级后用户
+  可能长时间看到旧页面）。其余静态资源（`analysis_worker.js` /
+  `engine_bundle.js` / `*.wasm`）可以放心长缓存：页面以
+  `?v=<版本>` 引用它们，升级后 URL 自动变化，不会混用新旧文件。
+  例：nginx `location = /index.html { add_header Cache-Control no-cache; }`
 
 ## 验证
 
