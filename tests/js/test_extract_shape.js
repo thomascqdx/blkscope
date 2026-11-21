@@ -66,7 +66,9 @@ test('extractAll: event SQL mirrors extract.py exactly', async () => {
     'from ftrace_event where name=\'block_rq_insert\' order by ts');
 });
 
-test('_fillProcessNames: main thread wins, else first named, missing kept',
+// Same frame asserted literally in tests/test_model_parity.py against the
+// real pandas _fill_process_names; keep the two frames in sync.
+test('_fillProcessNames: main wins, first named, null upid / "" edge cases',
   () => {
     const t = {
       columns: ['utid', 'tid', 'thread_name', 'upid', 'pid',
@@ -75,13 +77,16 @@ test('_fillProcessNames: main thread wins, else first named, missing kept',
         // upid 10 (rows 0-2): main = row0 (tid==pid, named) -> 'main-t'
         // upid 20 (row 3): no named thread -> stays null
         // upid 30 (rows 4,5): main unnamed, row5 named -> 'named-x'
-        utid: [1, 2, 3, 4, 5, 6],
-        tid: [100, 101, 102, 200, 300, 301],
-        thread_name: ['main-t', 'worker', null, null, null, 'named-x'],
-        upid: [10, 10, 10, 20, 30, 30],
-        pid: [100, 100, 100, 200, 300, 300],
-        process_name: [null, 'keepme', null, null, null, null],
-        parent_pid: [0, 0, 0, 0, 0, 0],
+        // row 6: null upid -> pandas groupby drops the key, never filled
+        // row 7: upid 40, process_name '' -> unmapped -> null (not '')
+        utid: [1, 2, 3, 4, 5, 6, 7, 8],
+        tid: [100, 101, 102, 200, 300, 301, 400, 401],
+        thread_name: ['main-t', 'worker', null, null, null, 'named-x',
+          't-x', null],
+        upid: [10, 10, 10, 20, 30, 30, null, 40],
+        pid: [100, 100, 100, 200, 300, 300, 400, 999],
+        process_name: [null, 'keepme', null, null, null, null, '', ''],
+        parent_pid: [0, 0, 0, 0, 0, 0, 0, 0],
       },
     };
     const out = BLK.extract._fillProcessNames(t);
@@ -91,6 +96,8 @@ test('_fillProcessNames: main thread wins, else first named, missing kept',
     assert.strictEqual(out.data.process_name[3], null);       // no name in upid
     assert.strictEqual(out.data.process_name[4], 'named-x');  // first named
     assert.strictEqual(out.data.process_name[5], 'named-x');
+    assert.strictEqual(out.data.process_name[6], null);       // null upid
+    assert.strictEqual(out.data.process_name[7], null);       // '' -> NaN
   });
 
 test('extractAll: device/stats/bounds from canned results', async () => {

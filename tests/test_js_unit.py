@@ -19,7 +19,7 @@ pytestmark = pytest.mark.skipif(shutil.which("node") is None,
 
 def test_node_js_unit():
     r = subprocess.run(
-        ["node", "--test", "tests/js/*.js"],
+        ["node", "--test", "tests/js/test_*.js"],
         cwd=ROOT, capture_output=True, timeout=120)
     out = (r.stdout or b"").decode("utf-8", "replace") + \
         (r.stderr or b"").decode("utf-8", "replace")

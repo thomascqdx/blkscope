@@ -1,0 +1,276 @@
+/* BLK.frame: columnar helpers for the JS model port (web/model/).
+ *
+ * Semantics mirror pandas where the model relies on them:
+ *  - missing = null (JSON nulls; isNull also treats NaN/undefined as missing)
+ *  - sorts are ALWAYS stable: pandas multi-column sort_values is stable
+ *    (lexsort) and single-column quicksort is not, but every place where
+ *    ties matter uses explicit kind="stable" on the Python side.
+ *  - nulls sort last (pandas na_position='last'), both in argsort and in
+ *    groupBy key ordering (pandas groupby also DROPS NaN keys).
+ *  - mergeAsof mirrors pandas.merge_asof on numeric keys:
+ *      backward: last right row (in sorted order) with on <= left on
+ *      forward:  first right row with on >= left on
+ *      nearest:  smaller |diff| of the two candidates, tie -> backward
+ *      by-keys:  exact equality, and (pandas 3.x) null by-keys match other
+ *                null by-keys; left rows with null 'on' never match
+ *      tolerance: inclusive (|left - right| <= tol)
+ *
+ * INT64 WARNING for P4b: model.py's file key `s_dev * 2**40 + ino` exceeds
+ * 2^53 (e.g. 65155 * 2^40 ≈ 7e16) — NEVER compute it as a JS Number. Use
+ * composite string keys (e.g. `sdev + ':' + ino`) or nested Maps.
+ *
+ * Classic script, no modules. Exposes globalThis.BLK.frame.
+ */
+(function () {
+  'use strict';
+  const BLK = (globalThis.BLK = globalThis.BLK || {});
+  const frame = (BLK.frame = {});
+
+  frame.isNull = function (v) {
+    return v === null || v === undefined ||
+      (typeof v === 'number' && Number.isNaN(v));
+  };
+
+  /* pandas-like ascending compare: null last; numbers numerically;
+   * strings lexically. */
+  function cmpVal(a, b) {
+    const na = frame.isNull(a);
+    const nb = frame.isNull(b);
+    if (na && nb) return 0;
+    if (na) return 1;
+    if (nb) return -1;
+    if (a < b) return -1;
+    if (a > b) return 1;
+    if (a === b) return 0;
+    return String(a) < String(b) ? -1 : String(a) > String(b) ? 1 : 0;
+  }
+  frame.cmpVal = cmpVal;
+
+  /* Stable argsort over one or more column arrays, ascending, nulls last.
+   * cols = [col0, col1, ...] each of length n; returns Int32Array of row
+   * indices in sorted order (ties keep original index order). */
+  frame.argsort = function (cols, n) {
+    const idx = new Int32Array(n);
+    for (let i = 0; i < n; i++) idx[i] = i;
+    // Array.prototype.sort is stable in modern engines.
+    const arr = Array.from(idx);
+    arr.sort(function (a, b) {
+      for (const c of cols) {
+        const d = cmpVal(c[a], c[b]);
+        if (d) return d;
+      }
+      return a - b;
+    });
+    return Int32Array.from(arr);
+  };
+
+  /* Stable argsort of a single column array. */
+  frame.argsort1 = function (col, n) {
+    return frame.argsort([col], n === undefined ? col.length : n);
+  };
+
+  /* pandas groupby: groups row indices by the value(s) of keyCols,
+   * iterating keys in sorted ascending order, NaN keys DROPPED.
+   * Returns array of {key, idxs} where key is the single value
+   * (keyCols.length == 1) or an array of values. */
+  frame.groupBy = function (keyCols, n) {
+    const map = new Map(); // encoded -> {key, idxs}
+    for (let i = 0; i < n; i++) {
+      const parts = [];
+      let skip = false;
+      for (const c of keyCols) {
+        const v = c[i];
+        if (frame.isNull(v)) { skip = true; break; }
+        parts.push(v);
+      }
+      if (skip) continue;
+      const enc = parts.map(encodeKeyVal).join('\x01');
+      let g = map.get(enc);
+      if (!g) {
+        g = { key: keyCols.length === 1 ? parts[0] : parts, idxs: [] };
+        map.set(enc, g);
+      }
+      g.idxs.push(i);
+    }
+    const groups = Array.from(map.values());
+    groups.sort(function (a, b) {
+      const ka = Array.isArray(a.key) ? a.key : [a.key];
+      const kb = Array.isArray(b.key) ? b.key : [b.key];
+      for (let i = 0; i < ka.length; i++) {
+        const d = cmpVal(ka[i], kb[i]);
+        if (d) return d;
+      }
+      return 0;
+    });
+    return groups;
+  };
+
+  /* Canonical encoding of a by-key component: numbers and nulls get a
+   * distinct encoding so NaN-by matches NaN-by (pandas 3.x) and types
+   * never collide. */
+  function encodeKeyVal(v) {
+    if (frame.isNull(v)) return '\x00';
+    if (typeof v === 'number') return '#' + v;
+    return 's' + String(v);
+  }
+  frame.encodeKeyVal = encodeKeyVal;
+
+  frame.byKey = function (vals) {
+    let s = '';
+    for (let i = 0; i < vals.length; i++) {
+      if (i) s += '\x01';
+      s += encodeKeyVal(vals[i]);
+    }
+    return s;
+  };
+
+  /* pandas.merge_asof on numeric keys.
+   *   leftOn:   left 'on' values in LEFT ROW ORDER (output aligns to it)
+   *   rightOn:  right 'on' values in SORTED order
+   *   leftBy:   optional array of encoded by-keys (frame.byKey) per left row
+   *   rightBy:  same per right row (aligned with rightOn)
+   *   direction 'backward' | 'forward' | 'nearest'
+   *   tolerance: inclusive; undefined/null = no tolerance
+   *   allowExactMatches: default true
+   * Returns Int32Array: per left row the right ROW INDEX (into rightOn/
+   * rightBy), or -1. Both arrays must already be sorted by 'on'. */
+  frame.mergeAsof = function (opts) {
+    const leftOn = opts.leftOn;
+    const rightOn = opts.rightOn;
+    const leftBy = opts.leftBy || null;
+    const rightBy = opts.rightBy || null;
+    const dir = opts.direction || 'backward';
+    const tol = opts.tolerance;
+    const exact = opts.allowExactMatches !== false;
+    const nl = leftOn.length;
+    const nr = rightOn.length;
+    const out = new Int32Array(nl).fill(-1);
+
+    // by-key -> sorted list of right indices
+    let groups = null;
+    let all = null;
+    if (rightBy) {
+      groups = new Map();
+      for (let j = 0; j < nr; j++) {
+        if (frame.isNull(rightOn[j])) continue;
+        const k = rightBy[j];
+        let l = groups.get(k);
+        if (!l) { l = []; groups.set(k, l); }
+        l.push(j);
+      }
+    } else {
+      all = [];
+      for (let j = 0; j < nr; j++) {
+        if (!frame.isNull(rightOn[j])) all.push(j);
+      }
+    }
+
+    function upperBound(list, x, strict) {
+      // first position with on > x (strict=false) or >= x (strict=true)
+      let lo = 0, hi = list.length;
+      while (lo < hi) {
+        const mid = (lo + hi) >> 1;
+        const v = rightOn[list[mid]];
+        if (strict ? v >= x : v > x) hi = mid; else lo = mid + 1;
+      }
+      return lo;
+    }
+
+    function bwd(list, x) {
+      const p = upperBound(list, x, !exact) - 1;
+      if (p < 0) return -1;
+      return list[p];
+    }
+    function fwd(list, x) {
+      // exact -> first on >= x; !exact -> first on > x
+      const p = upperBound(list, x, exact);
+      if (p >= list.length) return -1;
+      return list[p];
+    }
+
+    for (let i = 0; i < nl; i++) {
+      const x = leftOn[i];
+      if (frame.isNull(x)) continue;
+      const list = groups ? groups.get(leftBy[i]) : all;
+      if (!list || !list.length) continue;
+      let j = -1;
+      if (dir === 'backward') {
+        j = bwd(list, x);
+        if (j >= 0 && tol !== undefined && tol !== null &&
+            x - rightOn[j] > tol) j = -1;
+      } else if (dir === 'forward') {
+        j = fwd(list, x);
+        if (j >= 0 && tol !== undefined && tol !== null &&
+            rightOn[j] - x > tol) j = -1;
+      } else {
+        const jb = bwd(list, x);
+        const jf = fwd(list, x);
+        if (jb < 0) j = jf;
+        else if (jf < 0) j = jb;
+        else {
+          const db = x - rightOn[jb];
+          const df = rightOn[jf] - x;
+          j = db <= df ? jb : jf;   // tie -> backward
+        }
+        if (j >= 0 && tol !== undefined && tol !== null &&
+            Math.abs(rightOn[j] - x) > tol) j = -1;
+      }
+      out[i] = j;
+    }
+    return out;
+  };
+
+  /* Binary min-heap with comparator (for heapq port: heap of tuples). */
+  frame.Heap = class {
+    constructor(cmp) {
+      this.cmp = cmp || ((a, b) => (a < b ? -1 : a > b ? 1 : 0));
+      this.a = [];
+    }
+    get size() { return this.a.length; }
+    peek() { return this.a[0]; }
+    push(v) {
+      const a = this.a, cmp = this.cmp;
+      a.push(v);
+      let i = a.length - 1;
+      while (i > 0) {
+        const p = (i - 1) >> 1;
+        if (cmp(a[i], a[p]) < 0) {
+          const t = a[i]; a[i] = a[p]; a[p] = t; i = p;
+        } else break;
+      }
+    }
+    pop() {
+      const a = this.a, cmp = this.cmp;
+      const top = a[0];
+      const last = a.pop();
+      if (a.length) {
+        a[0] = last;
+        let i = 0;
+        for (;;) {
+          let m = i;
+          const l = 2 * i + 1, r = l + 1;
+          if (l < a.length && cmp(a[l], a[m]) < 0) m = l;
+          if (r < a.length && cmp(a[r], a[m]) < 0) m = r;
+          if (m === i) break;
+          const t = a[i]; a[i] = a[m]; a[m] = t; i = m;
+        }
+      }
+      return top;
+    }
+  };
+
+  /* Columnar table constructor. */
+  frame.table = function (columns, data) {
+    return { columns: columns.slice(), data: data };
+  };
+
+  frame.emptyTable = function (columns) {
+    const data = {};
+    for (const c of columns) data[c] = [];
+    return { columns: columns.slice(), data: data };
+  };
+
+  frame.nrows = function (t) {
+    return t.columns.length ? t.data[t.columns[0]].length : 0;
+  };
+})();

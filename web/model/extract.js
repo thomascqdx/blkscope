@@ -107,14 +107,17 @@
       return v === null || v === undefined || String(v).length === 0;
     });
     if (!need.some(Boolean)) return t;
-    // group row indices by upid, preserving original order (pandas groupby)
+    // group row indices by upid, preserving original order (pandas groupby
+    // drops NaN keys entirely)
     const groups = new Map();
     for (let i = 0; i < n; i++) {
       const k = t.data.upid[i];
+      if (k === null || k === undefined ||
+          (typeof k === 'number' && Number.isNaN(k))) continue;
       if (!groups.has(k)) groups.set(k, []);
       groups.get(k).push(i);
     }
-    const names = {};
+    const names = new Map();
     for (const [upid, idxs] of groups) {
       let pick = -1;
       // main thread: tid == pid (both non-null) and has a name
@@ -137,12 +140,15 @@
           }
         }
       }
-      if (pick >= 0) names[upid] = t.data.thread_name[pick];
+      if (pick >= 0) names.set(upid, t.data.thread_name[pick]);
     }
+    // pandas: th.loc[missing, 'process_name'] = upid.map(names) — an
+    // unmapped upid (or a null upid) becomes NaN, even if the row's
+    // original value was "".
     for (let i = 0; i < n; i++) {
       if (need[i]) {
-        const v = names[t.data.upid[i]];
-        if (v !== undefined) t.data.process_name[i] = v;
+        const v = names.get(t.data.upid[i]);
+        t.data.process_name[i] = (v === undefined) ? null : v;
       }
     }
     return t;

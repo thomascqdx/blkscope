@@ -4,9 +4,10 @@
     python scripts/dump_extracted.py <trace> [-o work/<stem>]
 
 Writes <out>.extracted.json — the raw extraction tables in the same columnar
-shape the web extract layer (web/model/extract.js) produces — and
-<out>.payload.json — build_payload(build_model(ex)), the parity baseline
-for the web model layer.
+shape the web extract layer (web/model/extract.js) produces —
+<out>.model_req.json — build_model(ex) intermediates (m.req, m.requeues,
+m.counters) for JS-model parity — and <out>.payload.json —
+build_payload(build_model(ex)), the payload parity baseline.
 
 The `script` field of Extracted (text-systrace fallback) is NOT dumped:
 the web version does not port textlog in v1 (requirements.md §8).
@@ -55,18 +56,19 @@ def _norm(v):
     return v
 
 
+def _dump_frame(df) -> dict:
+    cols = list(df.columns)
+    return {"columns": cols,
+            "data": {c: [_norm(v) for v in df[c]] for c in cols}}
+
+
 def dump(ex) -> dict:
     """Extracted -> the JSON shape shared with web/model/extract.js."""
     tables = {}
     for attr in TABLE_ATTRS:
         df = getattr(ex, attr, None)
-        if df is None:
-            cols = []
-            data = {}
-        else:
-            cols = list(df.columns)
-            data = {c: [_norm(v) for v in df[c]] for c in cols}
-        tables[attr] = {"columns": cols, "data": data}
+        tables[attr] = _dump_frame(df) if df is not None \
+            else {"columns": [], "data": {}}
     return {
         "tables": tables,
         "device": {k: _norm(v) for k, v in ex.device.items()},
@@ -75,6 +77,18 @@ def dump(ex) -> dict:
         "t_max": _norm(ex.t_max),
         "trace_start": _norm(ex.trace_start),
         "notes": [list(n) for n in ex.notes],
+    }
+
+
+def dump_model(ex) -> dict:
+    """build_model(ex) intermediate values for JS-model parity:
+    m.req in pairing order, m.requeues in event order, m.counters."""
+    from blkscope.model import build_model
+    m = build_model(ex)
+    return {
+        "req": _dump_frame(m.req),
+        "requeues": _dump_frame(m.requeues),
+        "counters": {k: _norm(v) for k, v in m.counters.items()},
     }
 
 
@@ -104,6 +118,11 @@ def main() -> None:
     with open(extracted_path, "w", encoding="utf-8") as f:
         json.dump(dump(ex), f, ensure_ascii=False)
     print(f"wrote {extracted_path}")
+
+    model_path = out + ".model_req.json"
+    with open(model_path, "w", encoding="utf-8") as f:
+        json.dump(dump_model(ex), f, ensure_ascii=False)
+    print(f"wrote {model_path}")
 
     payload = build_payload(build_model(ex), name=stem,
                             source=os.path.basename(args.trace))
