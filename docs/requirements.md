@@ -192,3 +192,40 @@ ino 为文件系统元数据 inode 时标为「FS 元数据」。所有关联结
   - 脚本的读总量只累加 issue（单计），与 Top N 的双计口径不同；工具按完成请求的 bytes 统计。
   - 脚本没有设备 / 轨道过滤（含 loop）；报告主表按当前过滤，对照块用「含 loop + 全轨道」对齐脚本原值。
   - 报告页以工具模型为准，脚本原值仅作对照。
+
+## 8. 网页版（拖入即分析，讨论结论，第一期）
+
+背景：单 exe 工具越来越多，分发、更新和「选文件 → 跑命令 → 打开 HTML」的流程负担重。目标是像 Perfetto UI 一样：打开网页，把 trace 拖进去，直接在浏览器里分析；免安装，始终是最新版；**trace 只在浏览器本地处理，不上传**。
+
+**引擎**
+- 原样复用 Perfetto 官方构建的 `engine_bundle.js` + `trace_processor.wasm` + `trace_processor_memory64.wasm`（ui.perfetto.dev 的 `v57.2-da1d152cf/` 目录，与 `tools/` 中原生 trace_processor_shell 同版本），由 `scripts/fetch_tp_wasm.py` 固定版本下载并校验 sha256，放到 `tools/wasm/`（不入库），附 Perfetto 的 Apache-2.0 LICENSE。不自行编译。
+- `engine_bundle.js` 是自成一体的 Web Worker：主线程编译 wasm 得到 `WebAssembly.Module`，把 `{port, wasmModule}` 发给它；它按浏览器是否支持 memory64 自动选 32/64 位构建；之后在 MessagePort 上收发 protobuf 编码的 TraceProcessor RPC（与 Python `perfetto` 库走 HTTP 的协议相同）。我们只写一个最小的 JS RPC 客户端（追加数据 / 结束追加 / 重置 / 流式查询 + CellsBatch 解码）。该初始化方式不是公开 API，因此版本锁定、由测试守护；以后原生与 WASM 一起升级。
+- 重置会话的参数必须与原生 `tp.open_trace` 的配置对齐（如 `ingest_ftrace_in_raw`），保证 `ftrace_event` 与时间窗一致。
+
+**建模**
+- `extract.py` + `model.py` + `payload.py` 的逻辑改写为 JS（`web/model/`），是不依赖 DOM 的纯模块，浏览器 Worker 与 Node 都能运行；用 TypedArray / 排序双指针实现 `merge_asof` 等语义。payload 格式与 CLI 完全相同。
+- 正确性用两层对照守护（都纳入 pytest，缺 Node / 样例 / 二进制时自动跳过）：
+  1. Python 导出 `extract_all` 的原始表（JSON），Node 里用 JS 建模层算 payload，与 Python `build_payload` 逐字段比对（字符串 id 还原成字符串后比较，浮点允许微小误差）；合成用例 + 样例各一套。
+  2. 无头 Edge 端到端：站点里加载样例 trace，网页算出的 payload 与 CLI payload 比对，并跑全量交互冒烟。
+
+**输入**
+- 与 Perfetto UI 一致：任何文件原样交给 trace_processor（protobuf、gzip、zip 等由它处理；多 trace 的 zip 由它合并成一个会话），不做格式白名单。已验证原生 v57.2 直接加载样例 zip 能解析出全部 block_rq / tran_ 事件。
+- 加载成功但没有块设备事件时优雅降级，给出说明。
+- 文本 systrace：trace_processor 的文本解析器会丢掉 block_rq_*（实测 780 MB 样例只剩 sched_switch），第一期**不移植 textlog**，检测到文本输入且没有块设备请求时明确提示「文本格式的块设备事件请暂用 CLI 版」。第二期再用 JS 移植 textlog（流式逐行解析 + 自写 zip 读取器）。
+- 一次拖入多个文件时列出来让用户选一个；一次只分析一个 trace。
+- 大 trace：第一期不做本机 `trace_processor_shell --httpd` 加速通道；自动选用 memory64 构建，按文件大小给提示，失败时引导使用 CLI。
+
+**输出**
+- 「导出报告 HTML」：生成与 CLI 产物格式完全相同的单文件报告（内嵌 payload，不含 wasm），用于分享 / 存档。
+
+**前端组织**
+- 一套 `web/` 源码，`manifest.json` 区分「报告」和「站点」两份清单；页面里有内嵌 payload 时直接渲染（CLI 报告行为不变），没有时显示拖放页。
+
+**部署与发布**
+- 服务器：静态目录（`index.html` + js/css + `engine_bundle.js` + 两个 wasm），解压到 web 根目录即可；不需要后端，不需要 COOP/COEP 响应头。
+- 离线兜底：同一份源码再打一个 `blkscope-offline-<版本>.html`（两个 wasm 以 base64 内联，engine 用 blob Worker 启动），可放共享盘双击使用。
+- 版本号唯一来源不变（`__version__`），页面与导出报告都显示；网页版上线升 MINOR。Release 在原 exe zip 之外增加 `blkscope-web-<版本>.zip`、离线 html 和一页部署说明。
+
+**过渡与退役**
+- 过渡期 CLI / exe / perfbox 条目照常发布，Python 实现作为对照基准；`startup_firstframe_io` 不在范围内。
+- 退役 Python 的条件（同时满足）：两层对照在样例上全部通过；textlog 文本补全已移植；网页版内网试用一段时间无遗留问题。退役时升 MAJOR。

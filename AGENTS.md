@@ -24,6 +24,7 @@
 - 每个输入 Trace 输出一个 HTML。
 - 时间统一用相对 trace 起点的 ns（JS Number 精度足够）。
 - 数据量大的数组用列式存储（payload 中按列存）。
+- 网页版（需求文档第 8 节）：浏览器里用 Perfetto 官方 v57.2 的 `engine_bundle.js` + trace_processor wasm（`tools/wasm/`，由 `scripts/fetch_tp_wasm.py` 获取，不入库）解析 trace，`web/model/` 是 extract/model/payload 的 JS 实现（不依赖 DOM，Node 可跑），payload 必须与 Python 版逐字段一致；过渡期 Python 实现是对照基准，改建模逻辑时两边同步修改。
 
 ## 领域规则（必须遵守）
 - 传音定制事件必须适配：`tran_fs/tran_fs_pagecache_start`（文件名）、`tran_block_feature/block_rq_mq_make_request`（优先级 / UX / pid）、
