@@ -109,9 +109,9 @@
       if (!nrows(t)) continue;
       const dev = t.data.dev, log = t.data.rq_log;
       for (let i = 0; i < nrows(t); i++) {
-        if (isNull(dev[i])) continue;
+        if (dev[i] === null || dev[i] !== dev[i]) continue;
         let ut = null;
-        if (!isNull(log[i])) {
+        if (!(log[i] === null || log[i] !== log[i])) {
           const m = USETAG_RE.exec(String(log[i]));
           if (m) {
             const x = Number(m[1]);
@@ -149,7 +149,7 @@
         const k = tupleKey(sd, ino);
         keys.add(k);
         const fb = pc.filebuf[i];
-        if (isNull(fb)) continue;
+        if (fb === null || fb !== fb) continue;
         // count filebuf frequencies per key for mode()
         let cnt = modeCnt.get(k);
         if (!cnt) { cnt = new Map(); modeCnt.set(k, cnt); }
@@ -169,8 +169,13 @@
     }
     if (nrows(fmAdd)) {
       const fa = fmAdd.data;
-      for (let i = 0; i < nrows(fmAdd); i++) {
-        keys.add(tupleKey(fa.s_dev[i], fa.i_ino[i]));
+      const nfa = nrows(fmAdd);
+      let lastSd = null, lastIno = null;
+      for (let i = 0; i < nfa; i++) {
+        const sd = fa.s_dev[i], ino = fa.i_ino[i];
+        if (sd === lastSd && ino === lastIno) continue;
+        lastSd = sd; lastIno = ino;
+        keys.add(tupleKey(sd, ino));
       }
     }
     // files rows sorted by (s_dev, ino)
@@ -224,34 +229,33 @@
     // fa = fm_add sorted by (utid, ts) — multi-key lexsort is stable
     const fa0 = fmAdd.data;
     const order = frame.argsort([fa0.utid, fa0.ts], nfa);
-    const fa = { utid: [], ts: [], s_dev: [], i_ino: [], index: [],
-      prev_ts: [], prev_sdev: [], prev_ino: [],
-      batch_id: [], matched: [] };
-    for (const i of order) {
-      fa.utid.push(fa0.utid[i]);
-      fa.ts.push(fa0.ts[i]);
-      fa.s_dev.push(fa0.s_dev[i]);
-      fa.i_ino.push(fa0.i_ino[i]);
-      fa.index.push(fa0.index ? fa0.index[i] : null);
-      fa.prev_ts.push(null);
-      fa.prev_sdev.push(null);
-      fa.prev_ino.push(null);
-      fa.batch_id.push(null);
-      fa.matched.push(false);
+    const nf = order.length;
+    const fa0idx = fa0.index;
+    const fa = { utid: new Array(nf), ts: new Array(nf),
+      s_dev: new Array(nf), i_ino: new Array(nf), index: new Array(nf),
+      prev_ts: new Array(nf).fill(null), prev_sdev: new Array(nf).fill(null),
+      prev_ino: new Array(nf).fill(null), batch_id: new Array(nf).fill(null),
+      matched: new Array(nf).fill(false) };
+    for (let k = 0; k < nf; k++) {
+      const i = order[k];
+      fa.utid[k] = fa0.utid[i];
+      fa.ts[k] = fa0.ts[i];
+      fa.s_dev[k] = fa0.s_dev[i];
+      fa.i_ino[k] = fa0.i_ino[i];
+      fa.index[k] = fa0idx ? fa0idx[i] : null;
     }
-    const nf = fa.ts.length;
-    // groupby('utid').shift() for ts, s_dev, i_ino
+    // groupby('utid').shift() for ts, s_dev, i_ino: rows are (utid,ts)
+    // sorted so a utid's rows are contiguous — the shifted value is the
+    // previous row's when the utid matches (NaN utid rows are dropped
+    // by groupby and keep null predecessors).
     {
-      const last = new Map();
-      for (let i = 0; i < nf; i++) {
-        const u = fa.utid[i];
-        if (isNull(u)) continue;   // pandas groupby drops NaN keys
-        if (last.has(u)) {
-          fa.prev_ts[i] = last.get(u)[0];
-          fa.prev_sdev[i] = last.get(u)[1];
-          fa.prev_ino[i] = last.get(u)[2];
+      const u = fa.utid;
+      for (let i = 1; i < nf; i++) {
+        if (u[i] !== null && u[i] === u[i - 1]) {
+          fa.prev_ts[i] = fa.ts[i - 1];
+          fa.prev_sdev[i] = fa.s_dev[i - 1];
+          fa.prev_ino[i] = fa.i_ino[i - 1];
         }
-        last.set(u, [fa.ts[i], fa.s_dev[i], fa.i_ino[i]]);
       }
     }
 
@@ -271,16 +275,19 @@
           pc0.minor_dev[i]);
         pcIno[k] = pc0.ino[i];
       }
-      // left = fa sorted by ts (lid = fa row index)
+      // left = fa sorted by ts (lid = fa row index); numeric by-keys
+      // with missing -> NaN (same group semantics as encodeKeyVal)
       const lOrder = frame.argsort([fa.ts], nf);
-      const lOn = new Array(nf), lBy = new Array(nf);
+      const lOn = new Array(nf), lBy = new Float64Array(nf);
       for (let k = 0; k < nf; k++) {
+        const v = fa.utid[lOrder[k]];
         lOn[k] = fa.ts[lOrder[k]];
-        lBy[k] = frame.encodeKeyVal(fa.utid[lOrder[k]]);
+        lBy[k] = (v === null || v !== v) ? NaN : v;
       }
-      const rBy = new Array(npc);
+      const rBy = new Float64Array(npc);
       for (let k = 0; k < npc; k++) {
-        rBy[k] = frame.encodeKeyVal(pcUtid[k]);
+        const v = pcUtid[k];
+        rBy[k] = (v === null || v !== v) ? NaN : v;
       }
       const hit = frame.mergeAsof({
         leftOn: lOn, rightOn: pcTs, leftBy: lBy, rightBy: rBy,
@@ -303,81 +310,53 @@
           pcInoOf[i] === fa.i_ino[i] && pcSdevOf[i] === fa.s_dev[i];
       }
 
-      // hit rows (fa order, already utid/ts sorted)
+      // hit rows (fa order, already utid/ts sorted). Groups (utid,
+      // pc_idx) and combos (utid, pc_idx, sub) are non-decreasing along
+      // hit order (merge_asof gives non-decreasing pc_idx within a utid
+      // and sub is a cumsum), so first-seen order == pandas' sorted
+      // ngroup order — batch codes are assigned sequentially with no
+      // key strings or combo sorts.
       const hitIdx = [];
       for (let i = 0; i < nf; i++) if (fa.matched[i]) hitIdx.push(i);
       if (hitIdx.length) {
-        // head: first per (utid, pc_idx)
-        const seen = new Set();
-        const head = new Set();
+        const gb = [];               // per batch_code aggregates
+        let lastU = null, lastP = -1, runSub = 0, code = -1;
         for (const i of hitIdx) {
-          const k = fa.utid[i] + '\x01' + pcIdxOf[i];
-          if (!seen.has(k)) { seen.add(k); head.add(i); }
-        }
-        // anchor + brk + cumsum sub per (utid, pc_idx)
-        const anchor = new Array(nf);
-        const sub = new Array(nf).fill(0);
-        const subMap = new Map();
-        for (const i of hitIdx) {
-          if (isNull(fa.utid[i])) continue;  // groupby drops NaN keys
-          anchor[i] = head.has(i) ? pcTsOf[i]
-            : (isNull(fa.prev_ts[i]) ? pcTsOf[i] : fa.prev_ts[i]);
-          const brk = (fa.ts[i] - anchor[i]) > BATCH_GAP_NS;
-          const gk = fa.utid[i] + '\x01' + pcIdxOf[i];
-          const prev = subMap.get(gk) || 0;
-          sub[i] = prev + (brk ? 1 : 0);
-          subMap.set(gk, sub[i]);
-        }
-        // batch_code = ngroup(utid, pc_idx, sub) sorted
-        const combos = new Set();
-        for (const i of hitIdx) {
-          if (isNull(fa.utid[i])) continue;
-          combos.add(fa.utid[i] + '\x01' + pcIdxOf[i] + '\x01' + sub[i]);
-        }
-        const comboArr = Array.from(combos).sort(function (a, b) {
-          const [ua, pa, sa] = a.split('\x01').map(Number);
-          const [ub, pb, sb] = b.split('\x01').map(Number);
-          return (ua - ub) || (pa - pb) || (sa - sb);
-        });
-        const codeOf = new Map();
-        comboArr.forEach(function (k, i) { codeOf.set(k, i); });
-        for (const i of hitIdx) {
-          if (isNull(fa.utid[i])) continue;  // batch_code NaN
-          fa.batch_id[i] = codeOf.get(
-            fa.utid[i] + '\x01' + pcIdxOf[i] + '\x01' + sub[i]);
-        }
-        // groupby(batch_code).agg — group order = hit order (sorted by
-        // batch_code via sorted key iteration)
-        const gbMap = new Map();
-        for (const i of hitIdx) {
-          const bc = fa.batch_id[i];
-          let g = gbMap.get(bc);
-          if (!g) {
-            g = { batch_id: bc, utid: null, tsMin: Infinity,
-              pcMin: Infinity, subMin: Infinity, tMax: -Infinity,
-              sd: null, ino: null, pageMin: Infinity, n: 0 };
-            gbMap.set(bc, g);
+          const u = fa.utid[i];
+          if (u === null || u !== u) continue;  // groupby drops NaN keys
+          const p = pcIdxOf[i];
+          const newGroup = u !== lastU || p !== lastP;
+          const pprev = fa.prev_ts[i];
+          const anchor = newGroup ? pcTsOf[i]
+            : (pprev === null ? pcTsOf[i] : pprev);
+          const brk = (fa.ts[i] - anchor) > BATCH_GAP_NS;
+          runSub = newGroup ? (brk ? 1 : 0) : runSub + (brk ? 1 : 0);
+          if (newGroup || !gb[code] || runSub !== gb[code].subMax) {
+            // new (utid, pc_idx, sub) combo -> next batch code
+            code += 1;
+            gb.push({ batch_id: code, utid: u, tsMin: Infinity,
+              pcMin: Infinity, subMin: Infinity, subMax: -Infinity,
+              tMax: -Infinity, sd: null, ino: null,
+              pageMin: Infinity, n: 0 });
           }
-          // 'first' = first non-null in group order
-          if (g.utid === null && !isNull(fa.utid[i])) g.utid = fa.utid[i];
-          if (g.sd === null && !isNull(fa.s_dev[i])) g.sd = fa.s_dev[i];
-          if (g.ino === null && !isNull(fa.i_ino[i])) g.ino = fa.i_ino[i];
+          fa.batch_id[i] = code;
+          const g = gb[code];
+          const sdv = fa.s_dev[i], inv = fa.i_ino[i],
+            pgv = fa.index[i];
+          if (g.sd === null && sdv !== null) g.sd = sdv;
+          if (g.ino === null && inv !== null) g.ino = inv;
           if (fa.ts[i] < g.tsMin) g.tsMin = fa.ts[i];
           if (pcTsOf[i] < g.pcMin) g.pcMin = pcTsOf[i];
-          if (sub[i] < g.subMin) g.subMin = sub[i];
+          if (runSub < g.subMin) g.subMin = runSub;
+          if (runSub > g.subMax) g.subMax = runSub;
           if (fa.ts[i] > g.tMax) g.tMax = fa.ts[i];
-          if (!isNull(fa.index[i]) && fa.index[i] < g.pageMin) {
-            g.pageMin = fa.index[i];
-          }
+          if (pgv !== null && pgv < g.pageMin) g.pageMin = pgv;
           g.n += 1;
+          lastU = u; lastP = p;
         }
-        const codes = Array.from(gbMap.keys()).sort(function (a, b) {
-          return a - b;
-        });
-        for (const bc of codes) {
-          const g = gbMap.get(bc);
+        for (const g of gb) {
           starts.push({
-            batch_id: bc,
+            batch_id: g.batch_id,
             utid: g.utid,
             ts: g.subMin === 0 ? g.pcMin : g.tsMin,
             t_last_add: g.tMax,
@@ -391,74 +370,52 @@
     }
 
     // no-start batches: consecutive unmatched rows, same file,
-    // gap <= 5ms, never continuing across a matched row
+    // gap <= 5ms, never continuing across a matched row. prev_matched
+    // is groupby('utid').shift() over the same contiguous utid runs,
+    // seg is a cumsum per utid, and (utid, seg) first-seen order is the
+    // sorted ngroup order — sequential codes again.
     const unIdx = [];
-    const prevMatched = new Array(nf).fill(false);
+    for (let i = 0; i < nf; i++) if (!fa.matched[i]) unIdx.push(i);
     {
-      const lastM = new Map();
-      for (let i = 0; i < nf; i++) {
-        const u = fa.utid[i];
-        if (isNull(u)) {           // NaN utid: groupby drops -> NaN->False
-          prevMatched[i] = false;
-        } else {
-          prevMatched[i] = lastM.has(u) ? lastM.get(u) : false;
-          lastM.set(u, fa.matched[i]);
-        }
-        if (!fa.matched[i]) unIdx.push(i);
-      }
-    }
-    {
-      const segMap = new Map();
-      const seg = new Array(nf).fill(0);
-      const combos = new Set();
+      const gb = [];
+      let lastU = null, lastSeg = -1, code = starts.length - 1;
       for (const i of unIdx) {
+        const u = fa.utid[i];
+        if (u === null || u !== u) {
+          continue;                 // NaN utid: batch_code NaN, no batch
+        }
+        const prevMatched = i > 0 && u === fa.utid[i - 1]
+          ? fa.matched[i - 1] : false;
         // (s_dev != prev_sdev) | (i_ino != prev_ino) |
-        // (ts - prev_ts > GAP) | prev_matched; pandas NaN != NaN -> True,
-        // so a null on either side breaks.
-        const u = fa.utid[i];
-        if (isNull(u)) continue;   // NaN utid: batch_code NaN, no batch
-        const sameFile = !isNull(fa.s_dev[i]) &&
-          fa.s_dev[i] === fa.prev_sdev[i] &&
-          !isNull(fa.i_ino[i]) && fa.i_ino[i] === fa.prev_ino[i];
-        const brk = !sameFile ||
-          (fa.ts[i] - fa.prev_ts[i] > BATCH_GAP_NS) ||
-          prevMatched[i];
-        const prev = segMap.get(u) || 0;
-        seg[i] = prev + (brk ? 1 : 0);
-        segMap.set(u, seg[i]);
-        combos.add(u + '\x01' + seg[i]);
-      }
-      const n0 = starts.length;
-      const comboArr = Array.from(combos).sort(function (a, b) {
-        const [ua, sa] = a.split('\x01').map(Number);
-        const [ub, sb] = b.split('\x01').map(Number);
-        return (ua - ub) || (sa - sb);
-      });
-      const codeOf = new Map();
-      comboArr.forEach(function (k, i) { codeOf.set(k, i); });
-      const gbMap = new Map();
-      for (const i of unIdx) {
-        if (isNull(fa.utid[i])) continue;
-        const bc = n0 + codeOf.get(fa.utid[i] + '\x01' + seg[i]);
-        fa.batch_id[i] = bc;
-        let g = gbMap.get(bc);
-        if (!g) {
-          g = { batch_id: bc, utid: null, tsMin: Infinity,
+        // (ts - prev_ts > GAP) | prev_matched; pandas NaN != NaN ->
+        // True, so a null on either side breaks.
+        const sdv = fa.s_dev[i], inv = fa.i_ino[i],
+          pts = fa.prev_ts[i], psd = fa.prev_sdev[i],
+          pino = fa.prev_ino[i];
+        const sameFile = sdv !== null && sdv === psd &&
+          inv !== null && inv === pino;
+        const brk = !sameFile || (fa.ts[i] - pts > BATCH_GAP_NS) ||
+          prevMatched;
+        const seg = u === lastU ? lastSeg + (brk ? 1 : 0)
+          : (brk ? 1 : 0);
+        if (u !== lastU || seg !== lastSeg) {
+          code += 1;
+          gb.push({ batch_id: code, utid: u, tsMin: Infinity,
             tMax: -Infinity, sd: null, ino: null,
-            pageMin: Infinity, n: 0 };
-          gbMap.set(bc, g);
+            pageMin: Infinity, n: 0 });
         }
-        if (g.utid === null && !isNull(fa.utid[i])) g.utid = fa.utid[i];
-        if (g.sd === null && !isNull(fa.s_dev[i])) g.sd = fa.s_dev[i];
-        if (g.ino === null && !isNull(fa.i_ino[i])) g.ino = fa.i_ino[i];
+        fa.batch_id[i] = code;
+        const g = gb[gb.length - 1];   // combos are contiguous
+        lastU = u; lastSeg = seg;
+        if (g.sd === null && sdv !== null) g.sd = sdv;
+        if (g.ino === null && inv !== null) g.ino = inv;
         if (fa.ts[i] < g.tsMin) g.tsMin = fa.ts[i];
         if (fa.ts[i] > g.tMax) g.tMax = fa.ts[i];
-        if (!isNull(fa.index[i]) && fa.index[i] < g.pageMin) {
-          g.pageMin = fa.index[i];
-        }
+        const pgv = fa.index[i];
+        if (pgv !== null && pgv < g.pageMin) g.pageMin = pgv;
         g.n += 1;
       }
-      for (const g of gbMap.values()) {
+      for (const g of gb) {
         starts.push({
           batch_id: g.batch_id,
           utid: g.utid,
@@ -473,21 +430,25 @@
     }
 
     starts.sort(function (a, b) { return a.batch_id - b.batch_id; });
-    const batches = { columns: BCOLS.slice(), data: {
-      batch_id: [], utid: [], ts: [], t_last_add: [], file_id: [],
-      page_first: [], page_count: [], has_start: [] } };
-    for (const g of starts) {
-      batches.data.batch_id.push(g.batch_id);
-      batches.data.utid.push(g.utid);
-      batches.data.ts.push(g.ts);
-      batches.data.t_last_add.push(g.t_last_add);
+    const nst = starts.length;
+    const bd = { batch_id: new Array(nst), utid: new Array(nst),
+      ts: new Array(nst), t_last_add: new Array(nst),
+      file_id: new Array(nst), page_first: new Array(nst),
+      page_count: new Array(nst), has_start: new Array(nst) };
+    for (let k = 0; k < nst; k++) {
+      const g = starts[k];
+      bd.batch_id[k] = g.batch_id;
+      bd.utid[k] = g.utid;
+      bd.ts[k] = g.ts;
+      bd.t_last_add[k] = g.t_last_add;
       const fid = (g.sd === null || g.ino === null) ? undefined
         : key2id.get(tupleKey(g.sd, g.ino));
-      batches.data.file_id.push(fid === undefined ? null : fid);
-      batches.data.page_first.push(g.page_first);
-      batches.data.page_count.push(g.page_count);
-      batches.data.has_start.push(g.has_start);
+      bd.file_id[k] = fid === undefined ? null : fid;
+      bd.page_first[k] = g.page_first;
+      bd.page_count[k] = g.page_count;
+      bd.has_start[k] = g.has_start;
     }
+    const batches = { columns: BCOLS.slice(), data: bd };
     const faTable = { columns: ['utid', 'ts', 's_dev', 'i_ino', 'index',
         'batch_id'],
       data: fa };
@@ -515,14 +476,19 @@
     // reads.t_sub = t_make ?? t_ins ?? t_iss0, drop null t_sub/utid
     const tSub = new Array(n).fill(null);
     const ridx = [];
+    const rMake = d.t_make, rIns = d.t_ins, rU = d.utid;
     for (const i of reads) {
-      tSub[i] = !isNull(d.t_make[i]) ? d.t_make[i]
-        : !isNull(d.t_ins[i]) ? d.t_ins[i]
-        : d.t_iss0[i];
-      if (!isNull(tSub[i]) && !isNull(d.utid[i])) ridx.push(i);
+      const a = rMake[i], b = rIns[i], u = rU[i];
+      const t = !(a === null || a !== a) ? a
+        : !(b === null || b !== b) ? b : d.t_iss0[i];
+      tSub[i] = t;
+      if (!(t === null || t !== t) && !(u === null || u !== u)) {
+        ridx.push(i);
+      }
     }
     // prev_sub: within each utid, previous row in t_sub-sorted order
-    const prevSub = new Map();
+    const prevSub = new Float64Array(n).fill(-Infinity);  // by req idx;
+    // a missing prev_sub means -inf so every add ts passes the filter
     {
       const srt = frame.argsort(
         [ridx.map(function (i) { return tSub[i]; })], ridx.length);
@@ -530,7 +496,8 @@
       for (const k of srt) {
         const i = ridx[k];
         const u = d.utid[i];
-        prevSub.set(i, last.has(u) ? last.get(u) : null);
+        const p = last.get(u);
+        if (p !== undefined) prevSub[i] = p;
         last.set(u, tSub[i]);
       }
     }
@@ -540,75 +507,83 @@
       // forward: first request submit at/after the add, same utid
       const nfa = nrows(fa);
       const lOrder = frame.argsort([fa.data.ts], nfa);
-      const lOn = new Array(nfa), lBy = new Array(nfa);
+      const lOn = new Array(nfa), lBy = new Float64Array(nfa);
       for (let k = 0; k < nfa; k++) {
+        const v = fa.data.utid[lOrder[k]];
         lOn[k] = fa.data.ts[lOrder[k]];
-        lBy[k] = frame.encodeKeyVal(fa.data.utid[lOrder[k]]);
+        lBy[k] = (v === null || v !== v) ? NaN : v;
       }
       const rOrder = frame.argsort(
         [ridx.map(function (i) { return tSub[i]; })], ridx.length);
-      const rOn = new Array(ridx.length), rBy = new Array(ridx.length);
+      const rOn = new Array(ridx.length), rBy = new Float64Array(
+        ridx.length);
       for (let k = 0; k < rOrder.length; k++) {
         const i = ridx[rOrder[k]];
+        const v = d.utid[i];
         rOn[k] = tSub[i];
-        rBy[k] = frame.encodeKeyVal(d.utid[i]);
+        rBy[k] = (v === null || v !== v) ? NaN : v;
       }
       const hit = frame.mergeAsof({
         leftOn: lOn, rightOn: rOn, leftBy: lBy, rightBy: rBy,
         direction: 'forward' });
-      // asg: matched adds where ts > prev_sub (prev_sub NaN -> -inf)
-      // cnt per (req_idx, s_dev, i_ino): n=size, pmin=min page index
-      // bm per (req_idx, s_dev, i_ino, batch_id): count -> bmode
-      const cnt = new Map();   // 'r\x01sd\x01ino' -> {n, pmin, sd, ino}
-      const bm = new Map();    // 'r\x01sd\x01ino\x01b' -> count
+      // asg: matched adds where ts > prev_sub (prev_sub NaN -> -inf).
+      // cnt = groupby(req_idx, s_dev, i_ino) size + min page; bmode =
+      // modal batch_id per group (max count, tie -> smallest bid). Run
+      // both as contiguous runs over a (req, sd, ino, bid) numeric sort:
+      // no per-row key strings or hash maps.
+      const aRi = [], aSd = [], aIno = [], aPg = [], aBid = [];
+      const faTs = fa.data.ts, faSd = fa.data.s_dev,
+        faIno = fa.data.i_ino, faIdx = fa.data.index,
+        faBid = fa.data.batch_id;
       for (let k = 0; k < hit.length; k++) {
         const j = hit[k];
         if (j < 0) continue;
         const ri = ridx[rOrder[j]];
-        const ps = prevSub.get(ri);
-        const lts = fa.data.ts[lOrder[k]];
-        if (!(lts > (ps === null ? -Infinity : ps))) continue;
-        const sd = fa.data.s_dev[lOrder[k]];
-        const ino = fa.data.i_ino[lOrder[k]];
-        if (isNull(sd) || isNull(ino)) continue; // groupby drops NaN keys
-        const ck = ri + '\x01' + sd + '\x01' + ino;
-        let g = cnt.get(ck);
-        if (!g) {
-          g = { n: 0, pmin: Infinity, sd: sd, ino: ino, req: ri };
-          cnt.set(ck, g);
+        if (!(faTs[lOrder[k]] > prevSub[ri])) continue;
+        const sd = faSd[lOrder[k]], ino = faIno[lOrder[k]];
+        // groupby drops NaN keys
+        if (sd === null || sd !== sd || ino === null || ino !== ino) {
+          continue;
         }
-        g.n += 1;
-        const pg = fa.data.index ? fa.data.index[lOrder[k]] : null;
-        if (!isNull(pg) && pg < g.pmin) g.pmin = pg;
-        const bid = fa.data.batch_id[lOrder[k]];
-        if (!isNull(bid)) {
-          const bk = ck + '\x01' + bid;
-          bm.set(bk, (bm.get(bk) || 0) + 1);
-        }
+        aRi.push(ri); aSd.push(sd); aIno.push(ino);
+        aPg.push(faIdx ? faIdx[lOrder[k]] : null);
+        aBid.push(faBid[lOrder[k]]);
       }
-      // bmode: max count per (req_idx, s_dev, i_ino); ties -> smallest
-      // batch_id (pandas stable sort keeps groupby's sorted index order)
-      const bmode = new Map();
-      for (const [bk, c] of bm) {
-        const last = bk.lastIndexOf('\x01');
-        const ck = bk.slice(0, last);
-        const bid = Number(bk.slice(last + 1));
-        const cur = bmode.get(ck);
-        if (!cur || c > cur.c || (c === cur.c && bid < cur.bid)) {
-          bmode.set(ck, { c: c, bid: bid });
-        }
-      }
-      // win: max n per req_idx, tie -> smallest s_dev then smallest i_ino
-      const win = new Map();
-      for (const g of cnt.values()) {
-        const bmE = bmode.get(
-          g.req + '\x01' + g.sd + '\x01' + g.ino);
-        const cur = win.get(g.req);
-        if (!cur || g.n > cur.n ||
-            (g.n === cur.n &&
-             (g.sd < cur.sd || (g.sd === cur.sd && g.ino < cur.ino)))) {
-          win.set(g.req, { n: g.n, pmin: g.pmin, sd: g.sd, ino: g.ino,
-            bmode: bmE ? bmE.bid : null });
+      const win = new Map();   // req_idx -> {n, pmin, sd, ino, bmode}
+      {
+        const m = aRi.length;
+        const so = frame.argsort([aRi, aSd, aIno, aBid], m);
+        let i = 0;
+        while (i < m) {
+          const ri = aRi[so[i]], sd = aSd[so[i]], ino = aIno[so[i]];
+          let n = 0, pmin = Infinity, bestC = -1, bestBid = null;
+          let j = i;
+          while (j < m && aRi[so[j]] === ri && aSd[so[j]] === sd &&
+                 aIno[so[j]] === ino) {
+            const bid = aBid[so[j]];
+            let q = j;
+            while (q < m && aRi[so[q]] === ri && aSd[so[q]] === sd &&
+                   aIno[so[q]] === ino && aBid[so[q]] === bid) {
+              const pg = aPg[so[q]];
+              if (pg !== null && pg < pmin) pmin = pg;
+              q += 1;
+            }
+            const c = q - j;
+            n += c;
+            if (bid !== null && c > bestC) {
+              bestC = c;               // runs see bids in sorted order,
+              bestBid = bid;           // so first max is the smallest
+            }
+            j = q;
+          }
+          i = j;
+          const cur = win.get(ri);
+          if (!cur || n > cur.n ||
+              (n === cur.n &&
+               (sd < cur.sd || (sd === cur.sd && ino < cur.ino)))) {
+            win.set(ri, { n: n, pmin: pmin, sd: sd, ino: ino,
+              bmode: bestBid });
+          }
         }
       }
       for (const [ri, w] of win) {
@@ -626,20 +601,22 @@
     if (nrows(pcStart)) {
       const miss = [];
       for (let i = 0; i < n; i++) {
-        if (d.fsrc[i] === 0 && !isNull(tSub[i]) &&
-            !isNull(d.utid[i])) miss.push(i);
+        const t = tSub[i], u = rU[i];
+        if (d.fsrc[i] === 0 && !(t === null || t !== t) &&
+            !(u === null || u !== u)) miss.push(i);
       }
       if (miss.length) {
         const pc0 = pcStart.data;
         const npc = nrows(pcStart);
         const pcOrder = frame.argsort([pc0.ts], npc);
-        const pcTs = new Array(npc), pcBy = new Array(npc),
+        const pcTs = new Array(npc), pcBy = new Float64Array(npc),
           pcKey = new Array(npc), pcOff = new Array(npc),
           pcByt = new Array(npc);
         for (let k = 0; k < npc; k++) {
           const i = pcOrder[k];
+          const v = pc0.utid[i];
           pcTs[k] = pc0.ts[i];
-          pcBy[k] = frame.encodeKeyVal(pc0.utid[i]);
+          pcBy[k] = (v === null || v !== v) ? NaN : v;
           pcKey[k] = tupleKey(
             model.newEncodeDev(pc0.major_dev[i], pc0.minor_dev[i]),
             pc0.ino[i]);
@@ -648,11 +625,13 @@
         }
         const lOrder = frame.argsort(
           [miss.map(function (i) { return tSub[i]; })], miss.length);
-        const lOn = new Array(miss.length), lBy = new Array(miss.length);
+        const lOn = new Array(miss.length), lBy = new Float64Array(
+          miss.length);
         for (let k = 0; k < lOrder.length; k++) {
           const i = miss[lOrder[k]];
+          const v = d.utid[i];
           lOn[k] = tSub[i];
-          lBy[k] = frame.encodeKeyVal(d.utid[i]);
+          lBy[k] = (v === null || v !== v) ? NaN : v;
         }
         const hit = frame.mergeAsof({
           leftOn: lOn, rightOn: pcTs, leftBy: lBy, rightBy: pcBy,
@@ -685,30 +664,31 @@
     const seen = new Set();
     for (let i = 0; i < nrows(threads); i++) {
       const u = t.utid[i];
-      if (isNull(u) || seen.has(u)) continue;
+      if (u === null || u !== u || seen.has(u)) continue;
       seen.add(u);
-      pname.set(u, isNull(t.process_name[i]) ? '' : t.process_name[i]);
+      const pn = t.process_name[i];
+      pname.set(u, pn === null || pn !== pn ? '' : pn);
     }
-    // gb = rf.groupby([file, proc])["bytes"].sum()
-    const gb = new Map();   // 'file\x01proc' -> sum
-    const procsOfFile = new Map();
-    for (let i = 0; i < frame.nrows(req); i++) {
-      if (d.op[i] !== 'R') continue;
-      if (isNull(d.file[i]) || isNull(d.utid[i])) continue;
-      const fid = d.file[i];
-      const proc = pname.get(d.utid[i]) || '';
-      const k = fid + '\x01' + proc;
-      const b = isNull(d.bytes[i]) ? 0 : d.bytes[i];
-      gb.set(k, (gb.get(k) || 0) + b);
-      let s = procsOfFile.get(fid);
-      if (!s) { s = new Set(); procsOfFile.set(fid, s); }
-      s.add(proc);
+    // gb = rf.groupby([file, proc])["bytes"].sum() as nested Maps
+    const gb = new Map();   // fid -> Map(proc -> sum)
+    const nr = frame.nrows(req);
+    const rOp = d.op, rFile = d.file, rU = d.utid, rB = d.bytes;
+    for (let i = 0; i < nr; i++) {
+      if (rOp[i] !== 'R') continue;
+      const fid = rFile[i], u = rU[i];
+      if (fid === null || fid !== fid || u === null || u !== u) {
+        continue;
+      }
+      const proc = pname.get(u) || '';
+      const b = rB[i];
+      let s = gb.get(fid);
+      if (!s) { s = new Map(); gb.set(fid, s); }
+      s.set(proc, (s.get(proc) || 0) + (b === null || b !== b ? 0 : b));
     }
     // idxmax per file: max bytes, tie -> smallest proc (code point)
-    for (const [fid, procs] of procsOfFile) {
+    for (const [fid, sums] of gb) {
       let best = null, bestSum = -Infinity;
-      for (const p of procs) {
-        const s = gb.get(fid + '\x01' + p);
+      for (const [p, s] of sums) {
         if (s > bestSum || (s === bestSum && best !== null &&
             frame.cmpStr(p, best) < 0)) {
           best = p; bestSum = s;

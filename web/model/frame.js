@@ -26,16 +26,17 @@
   const BLK = (globalThis.BLK = globalThis.BLK || {});
   const frame = (BLK.frame = {});
 
-  frame.isNull = function (v) {
+  const isNull = function (v) {
     return v === null || v === undefined ||
       (typeof v === 'number' && Number.isNaN(v));
   };
+  frame.isNull = isNull;
 
   /* pandas-like ascending compare: null last; numbers numerically;
    * strings lexically. */
   function cmpVal(a, b) {
-    const na = frame.isNull(a);
-    const nb = frame.isNull(b);
+    const na = isNull(a);
+    const nb = isNull(b);
     if (na && nb) return 0;
     if (na) return 1;
     if (nb) return -1;
@@ -46,22 +47,62 @@
   }
   frame.cmpVal = cmpVal;
 
+  /* Per-column numeric sort key for argsort: numbers sort by value with
+   * missing -> +Infinity (nulls last); columns containing non-numeric
+   * values are dictionary-encoded into cmpVal-ordered ranks (missing ->
+   * last rank). Keeps the comparator free of isNull/cmpVal calls. */
+  function sortKey(col, n) {
+    let numeric = true;
+    for (let i = 0; i < n; i++) {
+      const v = col[i];
+      if (v !== null && v !== undefined && typeof v !== 'number') {
+        numeric = false;
+        break;
+      }
+    }
+    const key = new Float64Array(n);
+    if (numeric) {
+      for (let i = 0; i < n; i++) {
+        const v = col[i];
+        key[i] = (v === null || v === undefined || v !== v)
+          ? Infinity : v;
+      }
+      return key;
+    }
+    const uniq = new Map();
+    for (let i = 0; i < n; i++) {
+      const v = col[i];
+      if (!isNull(v) && !uniq.has(v)) uniq.set(v, null);
+    }
+    const vals = Array.from(uniq.keys());
+    vals.sort(cmpVal);
+    for (let r = 0; r < vals.length; r++) uniq.set(vals[r], r);
+    const miss = vals.length;
+    for (let i = 0; i < n; i++) {
+      const v = col[i];
+      key[i] = isNull(v) ? miss : uniq.get(v);
+    }
+    return key;
+  }
+
   /* Stable argsort over one or more column arrays, ascending, nulls last.
    * cols = [col0, col1, ...] each of length n; returns Int32Array of row
    * indices in sorted order (ties keep original index order). */
   frame.argsort = function (cols, n) {
-    const idx = new Int32Array(n);
-    for (let i = 0; i < n; i++) idx[i] = i;
-    // Array.prototype.sort is stable in modern engines.
-    const arr = Array.from(idx);
+    const keys = cols.map(function (c) { return sortKey(c, n); });
+    const arr = new Array(n);
+    for (let i = 0; i < n; i++) arr[i] = i;
+    const nk = keys.length;
+    // Array.prototype.sort is stable in modern engines; a packed-SMI
+    // index array sorts faster than a TypedArray with a JS comparator.
     arr.sort(function (a, b) {
-      for (const c of cols) {
-        const d = cmpVal(c[a], c[b]);
+      for (let k = 0; k < nk; k++) {
+        const d = keys[k][a] - keys[k][b];
         if (d) return d;
       }
       return a - b;
     });
-    return Int32Array.from(arr);
+    return arr;
   };
 
   /* Stable argsort of a single column array. */
@@ -75,19 +116,30 @@
    * (keyCols.length == 1) or an array of values. */
   frame.groupBy = function (keyCols, n) {
     const map = new Map(); // encoded -> {key, idxs}
+    const single = keyCols.length === 1;
     for (let i = 0; i < n; i++) {
-      const parts = [];
-      let skip = false;
-      for (const c of keyCols) {
-        const v = c[i];
-        if (frame.isNull(v)) { skip = true; break; }
-        parts.push(v);
+      let enc;
+      let key;
+      if (single) {
+        const v = keyCols[0][i];
+        if (isNull(v)) continue;
+        key = v;
+        enc = encodeKeyVal(v);
+      } else {
+        const parts = [];
+        let skip = false;
+        for (const c of keyCols) {
+          const v = c[i];
+          if (isNull(v)) { skip = true; break; }
+          parts.push(v);
+        }
+        if (skip) continue;
+        key = parts;
+        enc = parts.map(encodeKeyVal).join('\x01');
       }
-      if (skip) continue;
-      const enc = parts.map(encodeKeyVal).join('\x01');
       let g = map.get(enc);
       if (!g) {
-        g = { key: keyCols.length === 1 ? parts[0] : parts, idxs: [] };
+        g = { key: key, idxs: [] };
         map.set(enc, g);
       }
       g.idxs.push(i);
@@ -109,7 +161,7 @@
    * distinct encoding so NaN-by matches NaN-by (pandas 3.x) and types
    * never collide. */
   function encodeKeyVal(v) {
-    if (frame.isNull(v)) return '\x00';
+    if (isNull(v)) return '\x00';
     if (typeof v === 'number') return '#' + v;
     return 's' + String(v);
   }
@@ -122,6 +174,19 @@
       s += encodeKeyVal(vals[i]);
     }
     return s;
+  };
+
+  /* Numeric by-key array for mergeAsof: Float64Array with missing ->
+   * NaN. NaN is a valid Map key under SameValueZero, so NaN by-keys
+   * match NaN by-keys — the same semantics as encodeKeyVal's '\x00',
+   * without building a string per row. */
+  frame.numBy = function (col, n) {
+    const out = new Float64Array(n);
+    for (let i = 0; i < n; i++) {
+      const v = col[i];
+      out[i] = (v === null || v === undefined || v !== v) ? NaN : v;
+    }
+    return out;
   };
 
   /* pandas.merge_asof on numeric keys.
@@ -152,7 +217,8 @@
     if (rightBy) {
       groups = new Map();
       for (let j = 0; j < nr; j++) {
-        if (frame.isNull(rightOn[j])) continue;
+        const v = rightOn[j];
+        if (v === null || v === undefined || v !== v) continue;
         const k = rightBy[j];
         let l = groups.get(k);
         if (!l) { l = []; groups.set(k, l); }
@@ -161,7 +227,8 @@
     } else {
       all = [];
       for (let j = 0; j < nr; j++) {
-        if (!frame.isNull(rightOn[j])) all.push(j);
+        const v = rightOn[j];
+        if (!(v === null || v === undefined || v !== v)) all.push(j);
       }
     }
 
@@ -190,7 +257,7 @@
 
     for (let i = 0; i < nl; i++) {
       const x = leftOn[i];
-      if (frame.isNull(x)) continue;
+      if (x === null || x === undefined || x !== x) continue;
       const list = groups ? groups.get(leftBy[i]) : all;
       if (!list || !list.length) continue;
       let j = -1;

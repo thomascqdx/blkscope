@@ -44,14 +44,23 @@
     return out;
   };
 
-  /* _ints: to_numeric coerce, NaN -> missing, trunc toward zero, -t0. */
+  /* _ints: to_numeric coerce, NaN -> missing, trunc toward zero, -t0.
+   * Fast paths: numbers skip pyToNumber entirely (it would return them
+   * unchanged) and null/undefined are missing without a regex test. */
   function ints(arr, t0, missing) {
     t0 = t0 || 0;
     missing = missing === undefined ? -1 : missing;
     const out = new Array(arr ? arr.length : 0);
     for (let i = 0; i < out.length; i++) {
-      const v = pyToNumber(arr[i]);
-      out[i] = Number.isNaN(v) ? missing : Math.trunc(v) - t0;
+      const v = arr[i];
+      if (typeof v === 'number') {
+        out[i] = v !== v ? missing : Math.trunc(v) - t0;
+      } else if (v === null || v === undefined) {
+        out[i] = missing;
+      } else {
+        const x = pyToNumber(v);
+        out[i] = Number.isNaN(x) ? missing : Math.trunc(x) - t0;
+      }
     }
     return out;
   }

@@ -55,11 +55,13 @@
     // np.maximum(t_last_add, batch_id.map(bend).fillna(-inf))
     const nb = nrows(m.batches);
     if (nb && n && req.data.batch &&
-        req.data.batch.some(function (v) { return !isNull(v); })) {
+        req.data.batch.some(function (v) {
+          return v !== null && v === v;
+        })) {
       const bend = new Map();
       for (let i = 0; i < n; i++) {
         const b = req.data.batch[i], c = req.data.t_cmp[i];
-        if (isNull(b) || isNull(c)) continue;
+        if (b === null || c === null || c !== c) continue;
         const cur = bend.get(b);
         if (cur === undefined || c > cur) bend.set(b, c);
       }
@@ -69,18 +71,20 @@
         const e = bend.get(bts[i]);
         const mapped = e === undefined ? -Infinity : e;
         // np.maximum: NaN propagates; -inf loses
-        tla[i] = isNull(tla[i]) ? null : Math.max(tla[i], mapped);
+        tla[i] = tla[i] === null ? null : Math.max(tla[i], mapped);
       }
     }
 
     // io_utids: request utids + batch utids (ints)
     const ioUtids = new Set();
     if (n) {
-      for (const u of req.data.utid) if (!isNull(u)) ioUtids.add(u);
+      for (const u of req.data.utid) {
+        if (u !== null && u === u) ioUtids.add(u);
+      }
     }
     if (nb) {
       for (const u of m.batches.data.utid) {
-        if (!isNull(u)) ioUtids.add(u);
+        if (u !== null && u === u) ioUtids.add(u);
       }
     }
     const ds = model.buildDstate(T.dstate, T.blocked, req, ioUtids,
@@ -96,20 +100,24 @@
     if (n) {
       const devSet = new Set();
       for (const v of req.data.dev) {
-        if (!isNull(v)) devSet.add(v);
+        if (v !== null && v === v) devSet.add(v);
       }
       const devs = Array.from(devSet).sort(function (a, b) {
         return a - b;
       });
       const hasLanes = req.columns.indexOf('lanes') >= 0;
-      for (const dev of devs) {
-        let lanes = 0;
-        if (hasLanes) {
-          for (let i = 0; i < n; i++) {
-            if (req.data.dev[i] === dev &&
-                req.data.lanes[i] > lanes) lanes = req.data.lanes[i];
+      const lanesBy = new Map();
+      if (hasLanes) {
+        const dv = req.data.dev, ln = req.data.lanes;
+        for (let i = 0; i < n; i++) {
+          const l = ln[i];
+          if (dv[i] !== null && l > (lanesBy.get(dv[i]) || 0)) {
+            lanesBy.set(dv[i], l);
           }
         }
+      }
+      for (const dev of devs) {
+        const lanes = lanesBy.get(dev) || 0;
         const sl = limByDev.get(dev);
         m.devs.push({ dev: dev, name: model.newDecodeDev(dev),
           kind: model.devKind(dev), lanes: lanes,
