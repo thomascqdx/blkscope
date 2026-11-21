@@ -229,3 +229,14 @@ ino 为文件系统元数据 inode 时标为「FS 元数据」。所有关联结
 **过渡与退役**
 - 过渡期 CLI / exe / perfbox 条目照常发布，Python 实现作为对照基准；`startup_firstframe_io` 不在范围内。
 - 退役 Python 的条件（同时满足）：两层对照在样例上全部通过；textlog 文本补全已移植；网页版内网试用一段时间无遗留问题。退役时升 MAJOR。
+
+**实现记录（v0.7.x，第一期已完成）**
+- 结构：`web/engine/`（RPC 客户端 + 引擎启动）、`web/model/`（extract / model / payload 的 JS 实现）、`web/site/`（拖放页 + 分析 Worker）；`scripts/build_web.py` 产出 `dist/web/` 与 `dist/blkscope-offline-<版本>.html`，`scripts/build_release.py` 一并产出 web zip、离线 html 和各自的 sha256。
+- 引擎：重置会话只设 `ingest_ftrace_in_raw_table=true`（与原生 shell 默认一致）；样例上 5 条基准查询与原生逐行一致，12 张原始表摘要一致。
+- 正确性：样例 payload 与 Python 版**逐字节一致**；合成用例覆盖配对、提交者匹配、requeue、槽位、批次、文件关联、D 状态、质量提示。移植中发现并修复了 Python 版的确定性与精度问题（同时改 Python 与 JS）：
+  - pandas 单列排序默认不稳定，并列时槽位 / 批次 / 匹配结果随 numpy 排序实现变化 → 相关排序改为 `kind="stable"`；
+  - 文件键 `s_dev<<40|ino` 超出 float64 精度（部分路径还会溢出 int64）：相邻 ino 被并成一个批次、pc_start 回退可能关联到相邻文件 → 改用 `(s_dev, ino)` 二元组（v0.7.1；样例上 1,177 个读请求改到正确文件，1,943 个误并批次拆开，关联率不变）；
+  - 数值型 caller 统一显示为 `caller#<整数>`。
+- 性能（样例 63 MB zip，Edge）：解析约 9.5 s、提取约 3 s、建模约 1.8 s、渲染约 0.4 s，从选文件到出图约 15 s；离线单文件约 37 MB，同样约 15 s。
+- 缓存：站点里 worker / 引擎 / wasm 的 URL 带 `?v=<版本>`，`index.html` 需 `no-cache`（见 `docs/deploy_web.md`）。
+- 第二期待办：textlog 文本补全的 JS 移植（含 zip 读取器），之后按退役条件评估下线 Python CLI。
